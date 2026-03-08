@@ -1,0 +1,15 @@
+[package]
+name = "skyroads-sdl"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[[bin]]
+name = "skyroads-sdl"
+path = "src/main.rs"
+
+[dependencies]
+skyroads-audio-ref = { path = "../skyroads-audio-ref" }
+skyroads-core = { path = "../skyroads-core" }
+skyroads-data = { path = "../skyroads-data" }
+skyroads-renderer-ref = { path = "../skyroads-renderer-ref" }

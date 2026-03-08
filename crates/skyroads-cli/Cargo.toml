@@ -1,0 +1,8 @@
+[package]
+name = "skyroads-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+skyroads-data = { path = "../skyroads-data" }
+skyroads-core = { path = "../skyroads-core" }
