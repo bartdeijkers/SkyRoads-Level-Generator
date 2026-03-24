@@ -1,11 +1,14 @@
 use std::env;
-use std::process::Command;
+use std::process::{self, Command};
 
 fn main() {
     println!("cargo:rerun-if-env-changed=SDL2_CONFIG");
     println!("cargo:rerun-if-env-changed=SDL2_LIBS");
 
-    if let Ok(flags) = env::var("SDL2_LIBS") {
+    if let Some(flags) = env::var("SDL2_LIBS")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
         emit_link_flags(&flags);
         return;
     }
@@ -24,7 +27,8 @@ fn main() {
         }
     }
 
-    println!("cargo:rustc-link-lib=SDL2");
+    eprintln!("{}", missing_sdl_message(&config));
+    process::exit(1);
 }
 
 fn emit_link_flags(flags: &str) {
@@ -60,4 +64,26 @@ fn emit_link_flags(flags: &str) {
     if !emitted_anything {
         println!("cargo:rustc-link-lib=SDL2");
     }
+}
+
+fn missing_sdl_message(config: &str) -> String {
+    format!(
+        "skyroads-sdl requires the native SDL2 development library.\n\
+         \n\
+         Tried these detection paths:\n\
+           - SDL2_LIBS environment override\n\
+           - {config} --libs\n\
+           - pkg-config --libs sdl2\n\
+         \n\
+         Install SDL2 development files, then retry.\n\
+         Common package names:\n\
+           - Debian/Ubuntu: libsdl2-dev\n\
+           - Fedora: SDL2-devel\n\
+           - Arch: sdl2\n\
+           - macOS (Homebrew): sdl2\n\
+         \n\
+         If SDL2 is installed in a non-standard location, set one of:\n\
+           - SDL2_CONFIG=/absolute/path/to/sdl2-config\n\
+           - SDL2_LIBS='-L/absolute/path/to/lib -lSDL2'\n"
+    )
 }

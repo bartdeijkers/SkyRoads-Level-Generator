@@ -127,6 +127,27 @@ These notes document technical reverse engineering and native-port work. Redistr
   - it reads current Z from `DS:9628`/`DS:962A`
   - it uses the returned index to read a byte from `DS:[BX + 0x962E]`
   - it stores decoded controls to `DS:933C` (accelerate/decelerate), `DS:9600` (left/right), and `DS:5488` (jump)
+- The live input dispatcher is also visible directly in the binary:
+  - the routine entered around `0x0952` switches on `DS:9602`
+  - `DS:9602 == 0` selects keyboard, `1` joystick, `2` mouse, `3` demo playback
+  - branch `1` jumps into the joystick decoder around `0x0BA0`
+    - the joystick path compares each calibrated axis against half-center and three-halves-center thresholds
+  - branch `2` jumps to the mouse decoder at `0x0B06`
+  - that mouse path reads `INT 33h` position/buttons and writes the same gameplay control bus:
+    - `x < 0x96` => left, `x > 0xAA` => right
+    - `y < 0x0F` => accelerate, `y > 0xB9` => brake
+    - any mouse button => jump
+  - on gameplay start, the mouse-control path recenters the cursor to `(160, 100)`, and the per-frame mouse decoder recenters X back to `160` after sampling
+- `SETMENU.LZS` is not a stack of full-screen menu pages:
+  - frame `0` is the full 320x200 controls-menu background
+  - frames `1..5` are white cursor overlays for keyboard, joystick, mouse, speaker, and music
+  - frames `6..10` are the orange selected-state overlays for those same five hotspots
+  - the recovered screen placements are:
+    - keyboard `(46, 58)` / selected `(47, 59)`
+    - joystick `(135, 51)` / selected `(136, 52)`
+    - mouse `(211, 62)` / selected `(212, 63)`
+    - speaker `(93, 108)` / selected `(94, 109)`
+    - music `(184, 104)` / selected `(185, 105)`
 - The `TREKDAT` expander is also visible directly in the binary:
   - the routine near file offset `0x3C78` loads `0x0410`
   - it performs `rep movsw` with `0x0138`, matching the 624-byte pointer-table copy

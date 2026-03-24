@@ -723,6 +723,23 @@ pub fn sample_demo_input_for_ship<'a>(
         .get((ship.z_position * (0x10000 as f64 / 0x0666 as f64)).floor() as usize)
 }
 
+pub fn controller_state_from_dos_mouse(mouse_x: u16, mouse_y: u16, buttons: u16) -> ControllerState {
+    // DOS mode-2 mouse input uses absolute 320x200 coordinates with dead zones around the
+    // centered ship. X is re-centered after each read, while Y remains absolute for throttle.
+    let turn_input = i8::from(mouse_x > 0x00AA) - i8::from(mouse_x < 0x0096);
+    let accel_input = i8::from(mouse_y < 0x000F) - i8::from(mouse_y > 0x00B9);
+    ControllerState::new(turn_input, accel_input, buttons != 0)
+}
+
+pub fn controller_state_from_dos_joystick(raw_x: u16, raw_y: u16, jump_pressed: bool) -> ControllerState {
+    // DOS mode-1 joystick input compares each calibrated axis against half-center and
+    // three-halves-center thresholds. SDL-style signed axes can be remapped into this raw
+    // 0..65535 space by adding 32768 before calling this helper.
+    let turn_input = i8::from(raw_x > 0xC000) - i8::from(raw_x < 0x4000);
+    let accel_input = i8::from(raw_y < 0x4000) - i8::from(raw_y > 0xC000);
+    ControllerState::new(turn_input, accel_input, jump_pressed)
+}
+
 pub fn controller_state_from_demo_input(input: Option<&DemoInput>) -> ControllerState {
     match input {
         Some(input) => {
@@ -763,8 +780,9 @@ mod tests {
     use skyroads_data::{level_from_road_entry, load_demo_rec_path, load_roads_lzs_path, GROUND_Y};
 
     use super::{
-        controller_state_from_demo_input, sample_demo_input_for_ship, ControllerState,
-        GameplaySession, ShipState,
+        controller_state_from_demo_input, controller_state_from_dos_joystick,
+        controller_state_from_dos_mouse,
+        sample_demo_input_for_ship, ControllerState, GameplaySession, ShipState,
     };
 
     fn repo_root() -> PathBuf {
@@ -779,6 +797,66 @@ mod tests {
         let controls = controller_state_from_demo_input(Some(input));
         assert_eq!(input.index, 120);
         assert_eq!(controls, ControllerState::new(0, 1, false));
+    }
+
+    #[test]
+    fn dos_mouse_decoder_matches_reversed_thresholds() {
+        assert_eq!(
+            controller_state_from_dos_mouse(0x0095, 0x0064, 0),
+            ControllerState::new(-1, 0, false)
+        );
+        assert_eq!(
+            controller_state_from_dos_mouse(0x00AB, 0x0064, 0),
+            ControllerState::new(1, 0, false)
+        );
+        assert_eq!(
+            controller_state_from_dos_mouse(0x00A0, 0x000E, 0),
+            ControllerState::new(0, 1, false)
+        );
+        assert_eq!(
+            controller_state_from_dos_mouse(0x00A0, 0x00BA, 0),
+            ControllerState::new(0, -1, false)
+        );
+        assert_eq!(
+            controller_state_from_dos_mouse(0x00A0, 0x0064, 0x0001),
+            ControllerState::new(0, 0, true)
+        );
+    }
+
+    #[test]
+    fn dos_mouse_decoder_keeps_boundary_values_neutral() {
+        assert_eq!(
+            controller_state_from_dos_mouse(0x0096, 0x000F, 0),
+            ControllerState::NEUTRAL
+        );
+        assert_eq!(
+            controller_state_from_dos_mouse(0x00AA, 0x00B9, 0),
+            ControllerState::NEUTRAL
+        );
+    }
+
+    #[test]
+    fn dos_joystick_decoder_matches_half_and_three_half_thresholds() {
+        assert_eq!(
+            controller_state_from_dos_joystick(0x3FFF, 0x8000, false),
+            ControllerState::new(-1, 0, false)
+        );
+        assert_eq!(
+            controller_state_from_dos_joystick(0xC001, 0x8000, false),
+            ControllerState::new(1, 0, false)
+        );
+        assert_eq!(
+            controller_state_from_dos_joystick(0x8000, 0x3FFF, false),
+            ControllerState::new(0, 1, false)
+        );
+        assert_eq!(
+            controller_state_from_dos_joystick(0x8000, 0xC001, true),
+            ControllerState::new(0, -1, true)
+        );
+        assert_eq!(
+            controller_state_from_dos_joystick(0x4000, 0xC000, false),
+            ControllerState::NEUTRAL
+        );
     }
 
     #[test]

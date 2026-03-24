@@ -51,6 +51,132 @@ impl MenuCursor {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlMode {
+    Keyboard,
+    Joystick,
+    Mouse,
+}
+
+impl ControlMode {
+    pub fn dos_value(self) -> u16 {
+        match self {
+            Self::Keyboard => 0,
+            Self::Joystick => 1,
+            Self::Mouse => 2,
+        }
+    }
+
+    fn from_dos_value(value: u16) -> Self {
+        match value {
+            1 => Self::Joystick,
+            2 => Self::Mouse,
+            _ => Self::Keyboard,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsMenuCursor {
+    Keyboard,
+    Joystick,
+    Mouse,
+    SoundFx,
+    Music,
+}
+
+impl SettingsMenuCursor {
+    pub fn overlay_frame_index(self) -> usize {
+        match self {
+            Self::Keyboard => 1,
+            Self::Joystick => 2,
+            Self::Mouse => 3,
+            Self::SoundFx => 4,
+            Self::Music => 5,
+        }
+    }
+
+    fn from_control_mode(mode: ControlMode) -> Self {
+        match mode {
+            ControlMode::Keyboard => Self::Keyboard,
+            ControlMode::Joystick => Self::Joystick,
+            ControlMode::Mouse => Self::Mouse,
+        }
+    }
+
+    fn selected_control_mode(self) -> Option<ControlMode> {
+        match self {
+            Self::Keyboard => Some(ControlMode::Keyboard),
+            Self::Joystick => Some(ControlMode::Joystick),
+            Self::Mouse => Some(ControlMode::Mouse),
+            Self::SoundFx | Self::Music => None,
+        }
+    }
+
+    fn x_center(self) -> i32 {
+        match self {
+            Self::Keyboard => 84,
+            Self::Joystick => 166,
+            Self::Mouse => 250,
+            Self::SoundFx => 120,
+            Self::Music => 208,
+        }
+    }
+
+    fn row_index(self) -> usize {
+        match self {
+            Self::Keyboard | Self::Joystick | Self::Mouse => 0,
+            Self::SoundFx | Self::Music => 1,
+        }
+    }
+
+    fn row_items(row: usize) -> &'static [Self] {
+        match row {
+            0 => &[Self::Keyboard, Self::Joystick, Self::Mouse],
+            1 => &[Self::SoundFx, Self::Music],
+            _ => &[],
+        }
+    }
+
+    fn move_in_direction(self, direction: SettingsNavDirection) -> Self {
+        let row = Self::row_items(self.row_index());
+        let index = row
+            .iter()
+            .position(|candidate| *candidate == self)
+            .expect("settings cursor must belong to its recovered SETMENU row");
+        match direction {
+            SettingsNavDirection::Left => index
+                .checked_sub(1)
+                .and_then(|next| row.get(next))
+                .copied()
+                .unwrap_or(self),
+            SettingsNavDirection::Right => row.get(index + 1).copied().unwrap_or(self),
+            SettingsNavDirection::Up => self.move_between_rows(-1),
+            SettingsNavDirection::Down => self.move_between_rows(1),
+        }
+    }
+
+    fn move_between_rows(self, delta: isize) -> Self {
+        let target_row = self.row_index() as isize + delta;
+        if target_row < 0 {
+            return self;
+        }
+        Self::row_items(target_row as usize)
+            .iter()
+            .copied()
+            .min_by_key(|candidate| ((candidate.x_center() - self.x_center()).abs(), candidate.x_center()))
+            .unwrap_or(self)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsNavDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct AppInput {
     pub up: bool,
@@ -66,6 +192,7 @@ pub struct AppInput {
     pub right_held: bool,
     pub enter_held: bool,
     pub space_held: bool,
+    pub gameplay_controls_override: Option<ControllerState>,
 }
 
 impl AppInput {
@@ -74,6 +201,9 @@ impl AppInput {
     }
 
     pub fn gameplay_controls(self) -> ControllerState {
+        if let Some(controls) = self.gameplay_controls_override {
+            return controls;
+        }
         ControllerState::new(
             axis(self.left_held, self.right_held),
             axis(self.down_held, self.up_held),
@@ -151,7 +281,10 @@ pub struct HelpMenuScene {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SettingsMenuScene {
-    pub frame_index: usize,
+    pub cursor: SettingsMenuCursor,
+    pub control_mode: ControlMode,
+    pub sound_fx_enabled: bool,
+    pub music_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -187,6 +320,10 @@ pub struct AttractModeApp {
     intro_song_started: bool,
     intro_sample_started: bool,
     menu_song_started: bool,
+    control_mode: ControlMode,
+    settings_cursor: SettingsMenuCursor,
+    sound_fx_enabled: bool,
+    music_enabled: bool,
 }
 
 impl AttractModeApp {
@@ -213,11 +350,19 @@ impl AttractModeApp {
             intro_song_started: false,
             intro_sample_started: false,
             menu_song_started: false,
+            control_mode: ControlMode::Keyboard,
+            settings_cursor: SettingsMenuCursor::Keyboard,
+            sound_fx_enabled: true,
+            music_enabled: true,
         }
     }
 
     pub fn mode(&self) -> AppMode {
         self.mode
+    }
+
+    pub fn control_mode(&self) -> ControlMode {
+        self.control_mode
     }
 
     pub fn tick(&mut self, input: AppInput) -> AppTickResult {
@@ -226,13 +371,14 @@ impl AttractModeApp {
             AppMode::Intro => self.tick_intro(input, &mut audio_commands),
             AppMode::MainMenu => self.tick_main_menu(input, &mut audio_commands),
             AppMode::HelpMenu => self.tick_help_menu(input, &mut audio_commands),
-            AppMode::SettingsMenu => self.tick_settings_menu(input),
+            AppMode::SettingsMenu => self.tick_settings_menu(input, &mut audio_commands),
             AppMode::DemoPlayback => self.tick_demo(input, &mut audio_commands),
             AppMode::Gameplay => self.tick_gameplay(input, &mut audio_commands),
             AppMode::Boot | AppMode::GoMenu => {
                 self.mode = AppMode::MainMenu;
             }
         }
+        self.filter_audio_commands(&mut audio_commands);
 
         AppTickResult {
             mode: self.mode,
@@ -284,9 +430,7 @@ impl AttractModeApp {
             self.menu_idle_tick = 0;
             match self.main_menu_cursor {
                 MenuCursor::Start => self.start_gameplay(audio_commands),
-                MenuCursor::Config => {
-                    self.mode = AppMode::SettingsMenu;
-                }
+                MenuCursor::Config => self.enter_settings_menu(),
                 MenuCursor::Help => {
                     self.help_page = 0;
                     self.mode = AppMode::HelpMenu;
@@ -322,9 +466,32 @@ impl AttractModeApp {
         }
     }
 
-    fn tick_settings_menu(&mut self, input: AppInput) {
-        if input.escape || input.enter || input.space {
+    fn tick_settings_menu(&mut self, input: AppInput, audio_commands: &mut Vec<AudioCommand>) {
+        if input.escape {
             self.mode = AppMode::MainMenu;
+            self.menu_idle_tick = 0;
+            return;
+        }
+        if input.left {
+            self.settings_cursor = self
+                .settings_cursor
+                .move_in_direction(SettingsNavDirection::Left);
+        }
+        if input.right {
+            self.settings_cursor = self
+                .settings_cursor
+                .move_in_direction(SettingsNavDirection::Right);
+        }
+        if input.up {
+            self.settings_cursor = self.settings_cursor.move_in_direction(SettingsNavDirection::Up);
+        }
+        if input.down {
+            self.settings_cursor = self
+                .settings_cursor
+                .move_in_direction(SettingsNavDirection::Down);
+        }
+        if input.enter || input.space {
+            self.apply_settings_selection(audio_commands);
             self.menu_idle_tick = 0;
         }
     }
@@ -407,15 +574,58 @@ impl AttractModeApp {
             AppMode::HelpMenu => RenderScene::HelpMenu(HelpMenuScene {
                 page_index: self.help_page,
             }),
-            AppMode::SettingsMenu => {
-                RenderScene::SettingsMenu(SettingsMenuScene { frame_index: 0 })
-            }
+            AppMode::SettingsMenu => RenderScene::SettingsMenu(SettingsMenuScene {
+                cursor: self.settings_cursor,
+                control_mode: self.control_mode,
+                sound_fx_enabled: self.sound_fx_enabled,
+                music_enabled: self.music_enabled,
+            }),
             AppMode::DemoPlayback => RenderScene::DemoPlayback(self.current_demo_scene()),
             AppMode::Gameplay => RenderScene::Gameplay(self.current_gameplay_scene()),
             AppMode::Boot | AppMode::GoMenu => RenderScene::MainMenu(MainMenuScene {
                 selected: self.main_menu_cursor,
             }),
         }
+    }
+
+    fn enter_settings_menu(&mut self) {
+        self.mode = AppMode::SettingsMenu;
+        self.settings_cursor = SettingsMenuCursor::from_control_mode(self.control_mode);
+    }
+
+    fn apply_settings_selection(&mut self, audio_commands: &mut Vec<AudioCommand>) {
+        if let Some(mode) = self.settings_cursor.selected_control_mode() {
+            self.control_mode = ControlMode::from_dos_value(mode.dos_value());
+            return;
+        }
+        match self.settings_cursor {
+            SettingsMenuCursor::SoundFx => {
+                self.sound_fx_enabled = !self.sound_fx_enabled;
+                if !self.sound_fx_enabled {
+                    audio_commands.push(AudioCommand::StopAllSamples);
+                }
+            }
+            SettingsMenuCursor::Music => {
+                self.music_enabled = !self.music_enabled;
+                if self.music_enabled {
+                    audio_commands.push(AudioCommand::PlaySong(MENU_SONG_INDEX));
+                    self.menu_song_started = true;
+                } else {
+                    audio_commands.push(AudioCommand::StopSong);
+                }
+            }
+            SettingsMenuCursor::Keyboard
+            | SettingsMenuCursor::Joystick
+            | SettingsMenuCursor::Mouse => {}
+        }
+    }
+
+    fn filter_audio_commands(&self, audio_commands: &mut Vec<AudioCommand>) {
+        audio_commands.retain(|command| match command {
+            AudioCommand::PlaySong(_) => self.music_enabled,
+            AudioCommand::PlayIntroSample | AudioCommand::PlaySfx(_) => self.sound_fx_enabled,
+            AudioCommand::StopSong | AudioCommand::StopAllSamples => true,
+        });
     }
 
     fn current_intro_scene(&self) -> IntroSequenceState {
@@ -577,8 +787,8 @@ mod tests {
     use skyroads_data::{level_from_road_entry, load_demo_rec_path, load_roads_lzs_path};
 
     use super::{
-        AppInput, AppMode, AttractModeApp, AudioCommand, MenuCursor, RenderScene,
-        GAMEPLAY_SONG_INDEX, RENDER_ROWS_BEHIND,
+        AppInput, AppMode, AttractModeApp, AudioCommand, ControlMode, MenuCursor, RenderScene,
+        SettingsMenuCursor, GAMEPLAY_SONG_INDEX, RENDER_ROWS_BEHIND,
     };
 
     fn repo_root() -> PathBuf {
@@ -735,6 +945,146 @@ mod tests {
                 );
                 assert_eq!(scene.ship.turn_input, 1);
                 assert_eq!(scene.ship.accel_input, 1);
+            }
+            other => panic!("unexpected render scene: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gameplay_controls_override_takes_precedence_over_keyboard_holds() {
+        let input = AppInput {
+            up_held: true,
+            right_held: true,
+            gameplay_controls_override: Some(crate::ControllerState::new(-1, -1, true)),
+            ..AppInput::default()
+        };
+        assert_eq!(
+            input.gameplay_controls(),
+            crate::ControllerState::new(-1, -1, true)
+        );
+    }
+
+    #[test]
+    fn settings_menu_reflects_current_runtime_settings() {
+        let mut app = make_app();
+        for _ in 0..35 {
+            app.tick(AppInput::default());
+        }
+        app.tick(AppInput {
+            space: true,
+            ..AppInput::default()
+        });
+        app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
+        let settings = app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        });
+        match settings.render_scene {
+            RenderScene::SettingsMenu(scene) => {
+                assert_eq!(scene.cursor, SettingsMenuCursor::Keyboard);
+                assert_eq!(scene.control_mode, ControlMode::Keyboard);
+                assert!(scene.sound_fx_enabled);
+                assert!(scene.music_enabled);
+            }
+            other => panic!("unexpected render scene: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn settings_menu_can_switch_control_mode_and_toggle_music() {
+        let mut app = make_app();
+        for _ in 0..35 {
+            app.tick(AppInput::default());
+        }
+        app.tick(AppInput {
+            space: true,
+            ..AppInput::default()
+        });
+        app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
+        app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        });
+
+        app.tick(AppInput {
+            right: true,
+            ..AppInput::default()
+        });
+        let joystick_hover = app.tick(AppInput::default());
+        match joystick_hover.render_scene {
+            RenderScene::SettingsMenu(scene) => {
+                assert_eq!(scene.cursor, SettingsMenuCursor::Joystick);
+                assert_eq!(scene.control_mode, ControlMode::Keyboard);
+            }
+            other => panic!("unexpected render scene: {other:?}"),
+        }
+        let mouse_select = app.tick(AppInput {
+            right: true,
+            enter: true,
+            ..AppInput::default()
+        });
+        assert!(mouse_select.audio_commands.is_empty());
+        assert_eq!(app.control_mode(), ControlMode::Mouse);
+        match mouse_select.render_scene {
+            RenderScene::SettingsMenu(scene) => {
+                assert_eq!(scene.cursor, SettingsMenuCursor::Mouse);
+                assert_eq!(scene.control_mode, ControlMode::Mouse);
+            }
+            other => panic!("unexpected render scene: {other:?}"),
+        }
+
+        let music_toggle = app.tick(AppInput {
+            down: true,
+            enter: true,
+            ..AppInput::default()
+        });
+        assert_eq!(music_toggle.audio_commands, vec![AudioCommand::StopSong]);
+        match music_toggle.render_scene {
+            RenderScene::SettingsMenu(scene) => {
+                assert_eq!(scene.cursor, SettingsMenuCursor::Music);
+                assert!(!scene.music_enabled);
+                assert!(scene.sound_fx_enabled);
+            }
+            other => panic!("unexpected render scene: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn settings_menu_can_toggle_sound_fx() {
+        let mut app = make_app();
+        for _ in 0..35 {
+            app.tick(AppInput::default());
+        }
+        app.tick(AppInput {
+            space: true,
+            ..AppInput::default()
+        });
+        app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
+        app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        });
+
+        let sound_toggle = app.tick(AppInput {
+            down: true,
+            enter: true,
+            ..AppInput::default()
+        });
+        assert_eq!(sound_toggle.audio_commands, vec![AudioCommand::StopAllSamples]);
+        match sound_toggle.render_scene {
+            RenderScene::SettingsMenu(scene) => {
+                assert_eq!(scene.cursor, SettingsMenuCursor::SoundFx);
+                assert!(!scene.sound_fx_enabled);
+                assert!(scene.music_enabled);
             }
             other => panic!("unexpected render scene: {other:?}"),
         }

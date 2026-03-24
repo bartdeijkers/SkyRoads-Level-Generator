@@ -7,4 +7,11 @@ members = [
   "crates/skyroads-audio-ref",
   "crates/skyroads-sdl",
 ]
+default-members = [
+  "crates/skyroads-data",
+  "crates/skyroads-cli",
+  "crates/skyroads-core",
+  "crates/skyroads-renderer-ref",
+  "crates/skyroads-audio-ref",
+]
 resolver = "2"

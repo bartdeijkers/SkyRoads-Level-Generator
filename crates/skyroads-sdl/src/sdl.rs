@@ -23,6 +23,7 @@ pub mod scancode {
 
 const SDL_EVENT_UNION_BYTES: usize = 56;
 const SDL_INIT_AUDIO: u32 = 0x0000_0010;
+const SDL_INIT_JOYSTICK: u32 = 0x0000_0200;
 const SDL_INIT_VIDEO: u32 = 0x0000_0020;
 const SDL_QUIT: u32 = 0x0100;
 const SDL_WINDOWPOS_CENTERED: c_int = 0x2FFF0000u32 as c_int;
@@ -45,6 +46,11 @@ struct SDL_Renderer {
 
 #[repr(C)]
 struct SDL_Texture {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+struct SDL_Joystick {
     _private: [u8; 0],
 }
 
@@ -120,6 +126,13 @@ extern "C" {
     fn SDL_PollEvent(event: *mut SDL_Event) -> c_int;
     fn SDL_PumpEvents();
     fn SDL_GetKeyboardState(numkeys: *mut c_int) -> *const u8;
+    fn SDL_GetMouseState(x: *mut c_int, y: *mut c_int) -> u32;
+    fn SDL_WarpMouseInWindow(window: *mut SDL_Window, x: c_int, y: c_int);
+    fn SDL_NumJoysticks() -> c_int;
+    fn SDL_JoystickOpen(index: c_int) -> *mut SDL_Joystick;
+    fn SDL_JoystickClose(joystick: *mut SDL_Joystick);
+    fn SDL_JoystickGetAxis(joystick: *mut SDL_Joystick, axis: c_int) -> i16;
+    fn SDL_JoystickGetButton(joystick: *mut SDL_Joystick, button: c_int) -> u8;
     fn SDL_OpenAudioDevice(
         device: *const c_char,
         iscapture: c_int,
@@ -158,6 +171,20 @@ pub struct Rect {
 
 impl Rect {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MouseState {
+    pub x: i32,
+    pub y: i32,
+    pub buttons: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JoystickState {
+    pub x_axis: i16,
+    pub y_axis: i16,
+    pub jump_pressed: bool,
+}
+
 impl From<Rect> for SDL_Rect {
     fn from(value: Rect) -> Self {
         Self {
@@ -173,7 +200,7 @@ pub struct Sdl;
 
 impl Sdl {
     pub fn init() -> Result<Self> {
-        let result = unsafe { SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) };
+        let result = unsafe { SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_JOYSTICK) };
         if result != 0 {
             return Err(last_error());
         }
@@ -211,6 +238,13 @@ impl Sdl {
         };
         KeyboardState { keys }
     }
+
+    pub fn mouse_state(&self) -> MouseState {
+        let mut x = 0;
+        let mut y = 0;
+        let buttons = unsafe { SDL_GetMouseState(&mut x, &mut y) };
+        MouseState { x, y, buttons }
+    }
 }
 
 impl Drop for Sdl {
@@ -247,12 +281,49 @@ impl Window {
         unsafe { SDL_SetWindowTitle(self.raw, title.as_ptr()) };
         Ok(())
     }
+
+    pub fn warp_mouse(&self, x: i32, y: i32) {
+        unsafe { SDL_WarpMouseInWindow(self.raw, x, y) }
+    }
 }
 
 impl Drop for Window {
     fn drop(&mut self) {
         if !self.raw.is_null() {
             unsafe { SDL_DestroyWindow(self.raw) }
+        }
+    }
+}
+
+pub struct Joystick {
+    raw: *mut SDL_Joystick,
+}
+
+impl Joystick {
+    pub fn open_first() -> Result<Option<Self>> {
+        if unsafe { SDL_NumJoysticks() } <= 0 {
+            return Ok(None);
+        }
+        let raw = unsafe { SDL_JoystickOpen(0) };
+        if raw.is_null() {
+            return Err(last_error());
+        }
+        Ok(Some(Self { raw }))
+    }
+
+    pub fn state(&self) -> JoystickState {
+        JoystickState {
+            x_axis: unsafe { SDL_JoystickGetAxis(self.raw, 0) },
+            y_axis: unsafe { SDL_JoystickGetAxis(self.raw, 1) },
+            jump_pressed: unsafe { SDL_JoystickGetButton(self.raw, 0) } != 0,
+        }
+    }
+}
+
+impl Drop for Joystick {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            unsafe { SDL_JoystickClose(self.raw) }
         }
     }
 }

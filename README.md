@@ -112,21 +112,65 @@ Useful commands:
 
 ```bash
 cargo test
+cargo test --workspace
 cargo run -p skyroads-cli -- summary .
+cargo run -p skyroads-cli -- demo-sim . 120
 cargo run -p skyroads-sdl -- .
+cargo run -p skyroads-sdl -- --smoke-gameplay .
 ```
+
+Notes:
+
+- `cargo test` runs the portable workspace crates by default and does not require SDL2
+- `cargo test --workspace` and `cargo run -p skyroads-sdl -- .` require native SDL2 development files
+- if SDL2 lives outside standard search paths, set `SDL2_CONFIG` or `SDL2_LIBS` before building `skyroads-sdl`
 
 If you want to run against a different local SkyRoads data directory, you can pass that path instead of `.`.
 
+### Testing from WSL
+
+If WSLg input/audio is flaky, split testing into two layers:
+
+- portable gameplay/data validation: `cargo test` and `cargo run -p skyroads-cli -- demo-sim . 120`
+- SDL host smoke test without a visible window: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy cargo run -p skyroads-sdl -- --smoke-gameplay .`
+
+The smoke test drives the native SDL host through intro -> menu -> gameplay automatically, holds throttle for a few gameplay ticks, prints a final gameplay summary, and exits non-zero if it never reaches gameplay.
+
+For a real interactive WSLg session, this still works:
+
+```bash
+cargo run -p skyroads-sdl -- .
+```
+
+Then focus the WSLg window and use `Space` to skip the intro and `Enter` on `Start` to enter gameplay.
+
 SDL controls:
 
-- `Up / Down`: menu, throttle, brake
-- `Left / Right`: steer
+- `Up / Down`: menu navigation, settings menu, keyboard throttle/brake
+- `Left / Right`: steer, settings menu
 - `Enter`: select, restart
 - `Space`: skip intro, jump, restart
 - `Escape`: back to menu
 - `Q`: quit
 - `Tab`: cycle visual debug modes
+
+The `Controls` menu now follows the recovered DOS structure:
+
+- top row selects `keyboard`, `joystick`, or `mouse` control mode
+- bottom row toggles `sound effects` and `music`
+- the menu art is composed from `SETMENU` base frame `0`, white cursor overlays `1..5`, and orange selected-state overlays `6..10`
+
+When `mouse` control mode is selected in that menu, the SDL host follows the recovered DOS thresholds:
+
+- move mouse left/right to steer
+- move mouse up/down to throttle or brake
+- use any mouse button to jump
+
+When `joystick` control mode is selected, the SDL host reads the first SDL joystick/gamepad:
+
+- axis `0`: left/right
+- axis `1`: throttle/brake
+- button `0`: jump
 
 ## Documentation
 

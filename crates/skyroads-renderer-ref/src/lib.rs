@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use skyroads_core::{
-    renderer_row_state, DemoPlaybackState, HelpMenuScene, IntroSequenceState, MainMenuScene,
-    RenderScene, RoadRenderRow, SettingsMenuScene,
+    renderer_row_state, ControlMode, DemoPlaybackState, HelpMenuScene, IntroSequenceState,
+    MainMenuScene, RenderScene, RoadRenderRow, SettingsMenuScene,
 };
 use skyroads_data::{
     load_dashboard_dat_path, load_image_archive_path, load_trekdat_lzs_path, HudFragmentPack,
@@ -19,6 +19,7 @@ const VIEW_BOTTOM_Y: usize = DASHBOARD_TOP;
 const SHIP_SCALE: usize = 1;
 const SHIP_SCREEN_X: i32 = 160;
 const SHIP_SCREEN_Y: i32 = 84;
+const GAME_OVER_OVERLAY_DELAY_FRAMES: usize = 24;
 const DEBUG_PANEL_X: i32 = 8;
 const DEBUG_PANEL_Y: i32 = 8;
 const DEBUG_PANEL_W: i32 = 124;
@@ -371,10 +372,27 @@ impl ReferenceRenderer {
 
     fn render_settings_menu(&self, frame: &mut FrameBuffer320x200, scene: &SettingsMenuScene) {
         frame.clear(RgbColor::new(0, 0, 0));
-        let frame_index = scene
-            .frame_index
-            .min(self.assets.settings_menu.frames.len().saturating_sub(1));
-        self.draw_archive_frame(frame, &self.assets.settings_menu, frame_index, 1.0, 1.0);
+        self.draw_archive_frame(frame, &self.assets.settings_menu, 0, 1.0, 1.0);
+        self.draw_archive_frame(
+            frame,
+            &self.assets.settings_menu,
+            settings_menu_selected_control_overlay(scene.control_mode),
+            1.0,
+            1.0,
+        );
+        if scene.sound_fx_enabled {
+            self.draw_archive_frame(frame, &self.assets.settings_menu, 9, 1.0, 1.0);
+        }
+        if scene.music_enabled {
+            self.draw_archive_frame(frame, &self.assets.settings_menu, 10, 1.0, 1.0);
+        }
+        self.draw_archive_frame(
+            frame,
+            &self.assets.settings_menu,
+            scene.cursor.overlay_frame_index(),
+            1.0,
+            1.0,
+        );
     }
 
     fn render_play_scene(&self, frame: &mut FrameBuffer320x200, scene: &DemoPlaybackState) {
@@ -413,7 +431,7 @@ impl ReferenceRenderer {
         self.draw_gauge(&mut *frame, &self.assets.speed_gauge, speed);
         if scene.did_win {
             self.draw_archive_frame(frame, &self.assets.go_menu, 1, 1.0, 1.0);
-        } else if scene.snapshot.craft_state != skyroads_core::ShipState::Alive {
+        } else if should_draw_game_over_overlay(scene) {
             self.draw_archive_frame(frame, &self.assets.go_menu, 0, 1.0, 1.0);
         }
     }
@@ -1620,6 +1638,16 @@ fn derive_ship_visual_state(scene: &DemoPlaybackState) -> DerivedShipVisualState
     }
 }
 
+fn should_draw_game_over_overlay(scene: &DemoPlaybackState) -> bool {
+    if scene.snapshot.craft_state == skyroads_core::ShipState::Alive {
+        return false;
+    }
+    let Some(death_frame_index) = scene.ship.death_frame_index else {
+        return true;
+    };
+    scene.frame_index.saturating_sub(death_frame_index) >= GAME_OVER_OVERLAY_DELAY_FRAMES
+}
+
 fn ship_screen_placement(
     scene: &DemoPlaybackState,
     visual: &DerivedShipVisualState,
@@ -1633,72 +1661,29 @@ fn ship_screen_placement_from_slices(
     visual: &DerivedShipVisualState,
     slices: &[ProjectedRoadSlice],
 ) -> ShipScreenPlacement {
-    let fallback_shadow_y = SHIP_SCREEN_Y + 18;
+    let _ = (scene, slices);
     let fallback_center_x = SHIP_SCREEN_X + visual.ship_screen_bias_x;
-    let fallback_shadow_x = fallback_center_x;
     let fallback_center_y = SHIP_SCREEN_Y + visual.vertical_offset_y;
-    let current_group = scene.current_row >> 3;
-    let target_shadow_y = fallback_shadow_y as usize;
-    let road_fraction = road_fraction_for_world_x(scene.ship.x_position);
+    let fallback_shadow_x = fallback_center_x;
+    let fallback_shadow_y = SHIP_SCREEN_Y + 18;
 
-    let anchor = slices
-        .iter()
-        .filter_map(|slice| {
-            let (center_x, width, surface_y) =
-                sample_slice_geometry(slice, target_shadow_y as i32)?;
-            Some((slice, center_x, width, surface_y))
-        })
-        .min_by_key(|(slice, _, _, surface_y)| {
-            let row_delta = slice
-                .trekdat_key
-                .road_row_group
-                .abs_diff(current_group);
-            let y_delta = surface_y.abs_diff(target_shadow_y as i32) as usize;
-            row_delta * 64 + y_delta
-        });
-
-    let Some((_, center_x, width, shadow_y)) = anchor else {
-        return ShipScreenPlacement {
-            sprite_center_x: fallback_center_x,
-            sprite_center_y: fallback_center_y,
-            shadow_center_x: fallback_shadow_x,
-            shadow_center_y: fallback_shadow_y,
-        };
-    };
-
-    let left_x = center_x - width / 2.0;
-    let shadow_center_x =
-        (left_x + width * road_fraction).round() as i32;
-    let shadow_center_y = shadow_y;
-
+    // Keep the shadow in the same stable screen-space frame as the ship until the exact
+    // DOS shadow/contact path is ported. The old slice-based shadow anchor drifted against
+    // the stabilized ship sprite and produced visibly unrealistic motion.
     ShipScreenPlacement {
-        sprite_center_x: shadow_center_x,
-        sprite_center_y: shadow_center_y - 18 + visual.vertical_offset_y,
-        shadow_center_x,
-        shadow_center_y,
+        sprite_center_x: fallback_center_x,
+        sprite_center_y: fallback_center_y,
+        shadow_center_x: fallback_shadow_x,
+        shadow_center_y: fallback_shadow_y,
     }
 }
 
-fn sample_slice_geometry(slice: &ProjectedRoadSlice, preferred_y: i32) -> Option<(f32, f32, i32)> {
-    if slice.bottom_y <= slice.top_y {
-        return None;
+fn settings_menu_selected_control_overlay(control_mode: ControlMode) -> usize {
+    match control_mode {
+        ControlMode::Keyboard => 6,
+        ControlMode::Joystick => 7,
+        ControlMode::Mouse => 8,
     }
-    let sample_y = preferred_y.clamp(slice.top_y as i32, slice.bottom_y as i32);
-    let height = (slice.bottom_y - slice.top_y) as f32;
-    if height <= 0.0 {
-        return None;
-    }
-    let t = ((sample_y - slice.top_y as i32) as f32 / height).clamp(0.0, 1.0);
-    Some((
-        lerp(slice.center_top, slice.center_bottom, t),
-        lerp(slice.width_top, slice.width_bottom, t),
-        sample_y,
-    ))
-}
-
-fn road_fraction_for_world_x(x_position: f64) -> f32 {
-    let road_width_world = LEVEL_TILE_STRIDE_X * ROAD_COLUMNS as f64;
-    ((x_position - 95.0) / road_width_world).clamp(0.0, 1.0) as f32
 }
 
 fn dos_ship_lane_index(x_position: f64) -> i32 {
@@ -1807,9 +1792,11 @@ fn projected_width_for_depth(depth: f32, far_depth: f32) -> f32 {
 }
 
 fn projected_center_x(scene: &DemoPlaybackState, depth: f32, far_depth: f32) -> f32 {
-    let ship_bias = derive_ship_visual_state(scene).ship_screen_bias_x as f32;
-    let perspective = 1.0 - ((depth / far_depth.max(1.0)).clamp(0.0, 1.0) * 0.55);
-    FRAMEBUFFER_WIDTH as f32 / 2.0 - ship_bias * perspective
+    let _ = (scene, depth, far_depth);
+    // Keep the fallback road projection centered until the exact DOS camera path is ported.
+    // The gameplay state already carries the ship's world X; applying an extra guessed camera
+    // pan here largely cancels the visible left/right movement of the user-controlled ship.
+    FRAMEBUFFER_WIDTH as f32 / 2.0
 }
 
 fn project_surface_spans(
@@ -2198,10 +2185,33 @@ pub fn frame_hash(frame: &FrameBuffer320x200) -> u64 {
 mod tests {
     use std::path::PathBuf;
 
-    use skyroads_core::{AppInput, AttractModeApp};
-    use skyroads_data::{level_from_road_entry, load_demo_rec_path, load_roads_lzs_path};
+    use skyroads_core::{AppInput, AttractModeApp, ControlMode, RenderScene, SettingsMenuCursor, SettingsMenuScene};
+    use skyroads_data::{level_from_road_entry, load_demo_rec_path, load_roads_lzs_path, GROUND_Y};
 
-    use super::{frame_hash, AttractModeAssets, CarAtlas, FrameBuffer320x200, ReferenceRenderer};
+    use super::{
+        derive_ship_visual_state, dos_ship_vertical_state, frame_hash, ship_screen_placement,
+        should_draw_game_over_overlay, AttractModeAssets, CarAtlas, FrameBuffer320x200,
+        ReferenceRenderer, GAME_OVER_OVERLAY_DELAY_FRAMES, SHIP_SCREEN_X, SHIP_SCREEN_Y,
+    };
+
+    #[derive(Debug, Clone, Copy)]
+    struct PlacementProbe {
+        frame_index: usize,
+        y_position: f64,
+        z_position: f64,
+        state: skyroads_core::ShipState,
+        is_on_ground: bool,
+        is_going_up: bool,
+        jump_input: bool,
+        ship_screen_bias_x: i32,
+        vertical_offset_y: i32,
+        jumping: bool,
+        vertical_state: i32,
+        sprite_center_x: i32,
+        sprite_center_y: i32,
+        shadow_center_x: i32,
+        shadow_center_y: i32,
+    }
 
     fn repo_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -2216,6 +2226,78 @@ mod tests {
             .map(level_from_road_entry)
             .collect::<Vec<_>>();
         AttractModeApp::new(levels, demo)
+    }
+
+    fn enter_gameplay(app: &mut AttractModeApp) {
+        for _ in 0..35 {
+            app.tick(AppInput::default());
+        }
+        app.tick(AppInput {
+            space: true,
+            ..AppInput::default()
+        });
+        let tick = app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        });
+        assert!(matches!(tick.render_scene, RenderScene::Gameplay(_)));
+    }
+
+    fn gameplay_scene_after_steps(input: AppInput, steps: usize) -> skyroads_core::DemoPlaybackState {
+        let mut app = make_app();
+        enter_gameplay(&mut app);
+
+        let mut scene = None;
+        for _ in 0..steps {
+            let tick = app.tick(input);
+            let RenderScene::Gameplay(current) = tick.render_scene else {
+                panic!("expected gameplay render scene");
+            };
+            scene = Some(current);
+        }
+
+        scene.expect("expected at least one gameplay step")
+    }
+
+    fn gameplay_scenes_after_steps(
+        input: AppInput,
+        steps: usize,
+    ) -> Vec<skyroads_core::DemoPlaybackState> {
+        let mut app = make_app();
+        enter_gameplay(&mut app);
+
+        let mut scenes = Vec::new();
+        for _ in 0..steps {
+            let tick = app.tick(input);
+            let RenderScene::Gameplay(current) = tick.render_scene else {
+                panic!("expected gameplay render scene");
+            };
+            scenes.push(current);
+        }
+
+        scenes
+    }
+
+    fn placement_probe(scene: &skyroads_core::DemoPlaybackState) -> PlacementProbe {
+        let visual = derive_ship_visual_state(scene);
+        let placement = ship_screen_placement(scene, &visual);
+        PlacementProbe {
+            frame_index: scene.frame_index,
+            y_position: scene.ship.y_position,
+            z_position: scene.ship.z_position,
+            state: scene.ship.state,
+            is_on_ground: scene.ship.is_on_ground,
+            is_going_up: scene.ship.is_going_up,
+            jump_input: scene.ship.jump_input,
+            ship_screen_bias_x: visual.ship_screen_bias_x,
+            vertical_offset_y: visual.vertical_offset_y,
+            jumping: visual.jumping,
+            vertical_state: dos_ship_vertical_state(scene),
+            sprite_center_x: placement.sprite_center_x,
+            sprite_center_y: placement.sprite_center_y,
+            shadow_center_x: placement.shadow_center_x,
+            shadow_center_y: placement.shadow_center_y,
+        }
     }
 
     #[test]
@@ -2258,6 +2340,28 @@ mod tests {
             .render_scene,
         );
         assert_ne!(frame_hash(&menu), frame_hash(&intro));
+    }
+
+    #[test]
+    fn settings_menu_composes_base_and_overlay_fragments() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+
+        let keyboard = renderer.render_scene(&RenderScene::SettingsMenu(SettingsMenuScene {
+            cursor: SettingsMenuCursor::Keyboard,
+            control_mode: ControlMode::Keyboard,
+            sound_fx_enabled: true,
+            music_enabled: true,
+        }));
+        let mouse = renderer.render_scene(&RenderScene::SettingsMenu(SettingsMenuScene {
+            cursor: SettingsMenuCursor::Music,
+            control_mode: ControlMode::Mouse,
+            sound_fx_enabled: false,
+            music_enabled: false,
+        }));
+
+        assert_ne!(frame_hash(&keyboard), 0);
+        assert_ne!(frame_hash(&keyboard), frame_hash(&mouse));
     }
 
     #[test]
@@ -2337,6 +2441,225 @@ mod tests {
         assert!(
             ship_pixels > 40,
             "expected visible ship pixels, found {ship_pixels}"
+        );
+    }
+
+    #[test]
+    fn gameplay_ship_placement_moves_visibly_with_steering() {
+        let neutral = gameplay_scene_after_steps(
+            AppInput {
+                up_held: true,
+                ..AppInput::default()
+            },
+            20,
+        );
+        let left = gameplay_scene_after_steps(
+            AppInput {
+                up_held: true,
+                left_held: true,
+                ..AppInput::default()
+            },
+            20,
+        );
+        let right = gameplay_scene_after_steps(
+            AppInput {
+                up_held: true,
+                right_held: true,
+                ..AppInput::default()
+            },
+            20,
+        );
+
+        let neutral_probe = placement_probe(&neutral);
+        let left_probe = placement_probe(&left);
+        let right_probe = placement_probe(&right);
+
+        assert!(left.ship.x_position < neutral.ship.x_position);
+        assert!(right.ship.x_position > neutral.ship.x_position);
+        assert!(
+            left_probe.sprite_center_x <= neutral_probe.sprite_center_x - 8,
+            "expected left steering to move the ship left on screen: left={} neutral={}",
+            left_probe.sprite_center_x,
+            neutral_probe.sprite_center_x
+        );
+        assert!(
+            right_probe.sprite_center_x >= neutral_probe.sprite_center_x + 8,
+            "expected right steering to move the ship right on screen: right={} neutral={}",
+            right_probe.sprite_center_x,
+            neutral_probe.sprite_center_x
+        );
+        assert!(
+            left_probe.shadow_center_x <= neutral_probe.shadow_center_x - 8,
+            "expected left steering to move the shadow left on screen: left={} neutral={}",
+            left_probe.shadow_center_x,
+            neutral_probe.shadow_center_x
+        );
+        assert!(
+            right_probe.shadow_center_x >= neutral_probe.shadow_center_x + 8,
+            "expected right steering to move the shadow right on screen: right={} neutral={}",
+            right_probe.shadow_center_x,
+            neutral_probe.shadow_center_x
+        );
+    }
+
+    #[test]
+    fn grounded_throttle_keeps_ship_pose_stable_and_airborne_ship_uses_fallback_anchor() {
+        let scenes = gameplay_scenes_after_steps(
+            AppInput {
+                up_held: true,
+                ..AppInput::default()
+            },
+            220,
+        );
+
+        let probes = scenes.iter().map(placement_probe).collect::<Vec<_>>();
+
+        let grounded = probes
+            .iter()
+            .take_while(|probe| probe.state == skyroads_core::ShipState::Alive && probe.is_on_ground)
+            .copied()
+            .collect::<Vec<_>>();
+        let first_sprite_y = grounded.first().map(|probe| probe.sprite_center_y).unwrap_or(0);
+        let first_shadow_y = grounded.first().map(|probe| probe.shadow_center_y).unwrap_or(0);
+        let first_shadow_x = grounded.first().map(|probe| probe.shadow_center_x).unwrap_or(0);
+        let max_sprite_y_delta = grounded
+            .iter()
+            .map(|probe| (probe.sprite_center_y - first_sprite_y).abs())
+            .max()
+            .unwrap_or(0);
+        let max_shadow_y_delta = grounded
+            .iter()
+            .map(|probe| (probe.shadow_center_y - first_shadow_y).abs())
+            .max()
+            .unwrap_or(0);
+        let max_shadow_x_delta = grounded
+            .iter()
+            .map(|probe| (probe.shadow_center_x - first_shadow_x).abs())
+            .max()
+            .unwrap_or(0);
+
+        for probe in &grounded {
+            assert!(
+                (probe.y_position - GROUND_Y).abs() < f64::EPSILON,
+                "expected throttle frame {} to stay on ground, got y={} z={} state={:?} on_ground={} going_up={} jump_input={} jumping={} vertical_state={}",
+                probe.frame_index,
+                probe.y_position,
+                probe.z_position,
+                probe.state,
+                probe.is_on_ground,
+                probe.is_going_up,
+                probe.jump_input,
+                probe.jumping,
+                probe.vertical_state
+            );
+            assert!(
+                !probe.jumping,
+                "expected grounded throttle frame {} to avoid jump pose",
+                probe.frame_index
+            );
+            assert_eq!(
+                probe.vertical_state, 0,
+                "expected grounded throttle frame {} to use neutral vertical state",
+                probe.frame_index
+            );
+        }
+
+        assert!(
+            max_sprite_y_delta <= 2,
+            "expected grounded throttle sprite placement to stay stable, got {} grounded frames with max delta {}",
+            grounded.len(),
+            max_sprite_y_delta
+        );
+        assert!(
+            max_shadow_y_delta <= 2,
+            "expected grounded throttle shadow Y to stay stable, got {} grounded frames with max delta {}",
+            grounded.len(),
+            max_shadow_y_delta
+        );
+        assert!(
+            max_shadow_x_delta <= 2,
+            "expected grounded throttle shadow X to stay stable, got {} grounded frames with max delta {}",
+            grounded.len(),
+            max_shadow_x_delta
+        );
+
+        let airborne = probes
+            .iter()
+            .find(|probe| probe.state != skyroads_core::ShipState::Alive || !probe.is_on_ground)
+            .copied()
+            .expect("expected sustained throttle to reach an airborne or fallen frame");
+        let expected_fallback_x = SHIP_SCREEN_X + airborne.ship_screen_bias_x;
+        let expected_sprite_y = SHIP_SCREEN_Y + airborne.vertical_offset_y;
+        let expected_shadow_y = SHIP_SCREEN_Y + 18;
+        assert_eq!(
+            airborne.sprite_center_x, expected_fallback_x,
+            "expected airborne ship sprite to use fallback X anchor at frame {}, got x={} expected={} world_y={} z={} state={:?}",
+            airborne.frame_index,
+            airborne.sprite_center_x,
+            expected_fallback_x,
+            airborne.y_position,
+            airborne.z_position,
+            airborne.state
+        );
+        assert_eq!(
+            airborne.shadow_center_x, expected_fallback_x,
+            "expected airborne shadow to use fallback X anchor at frame {}, got x={} expected={} world_y={} z={} state={:?}",
+            airborne.frame_index,
+            airborne.shadow_center_x,
+            expected_fallback_x,
+            airborne.y_position,
+            airborne.z_position,
+            airborne.state
+        );
+        assert_eq!(
+            airborne.sprite_center_y, expected_sprite_y,
+            "expected airborne ship sprite to use fallback Y anchor at frame {}, got y={} expected={} world_y={} z={} state={:?}",
+            airborne.frame_index,
+            airborne.sprite_center_y,
+            expected_sprite_y,
+            airborne.y_position,
+            airborne.z_position,
+            airborne.state
+        );
+        assert_eq!(
+            airborne.shadow_center_y, expected_shadow_y,
+            "expected airborne shadow to use fallback Y anchor at frame {}, got y={} expected={} world_y={} z={} state={:?}",
+            airborne.frame_index,
+            airborne.shadow_center_y,
+            expected_shadow_y,
+            airborne.y_position,
+            airborne.z_position,
+            airborne.state
+        );
+    }
+
+    #[test]
+    fn game_over_overlay_waits_before_covering_gameplay() {
+        let mut scene = gameplay_scene_after_steps(
+            AppInput {
+                up_held: true,
+                ..AppInput::default()
+            },
+            4,
+        );
+        scene.snapshot.craft_state = skyroads_core::ShipState::Exploded;
+        scene.ship.state = skyroads_core::ShipState::Exploded;
+        scene.ship.death_frame_index = Some(scene.frame_index);
+        assert!(
+            !should_draw_game_over_overlay(&scene),
+            "expected fresh death frame to keep gameplay visible"
+        );
+
+        scene.frame_index += GAME_OVER_OVERLAY_DELAY_FRAMES - 1;
+        assert!(
+            !should_draw_game_over_overlay(&scene),
+            "expected overlay to stay hidden until the full delay elapsed"
+        );
+
+        scene.frame_index += 1;
+        assert!(
+            should_draw_game_over_overlay(&scene),
+            "expected overlay to appear after the delay elapsed"
         );
     }
 
