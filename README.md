@@ -116,6 +116,8 @@ cargo test --workspace
 cargo run -p skyroads-cli -- summary .
 cargo run -p skyroads-cli -- demo-sim . 120
 cargo run -p skyroads-sdl -- .
+cargo run -p skyroads-sdl -- --fullscreen .
+cargo run -p skyroads-sdl -- --borderless .
 cargo run -p skyroads-sdl -- --smoke-gameplay .
 ```
 
@@ -124,6 +126,8 @@ Notes:
 - `cargo test` runs the portable workspace crates by default and does not require SDL2
 - `cargo test --workspace` and `cargo run -p skyroads-sdl -- .` require native SDL2 development files
 - if SDL2 lives outside standard search paths, set `SDL2_CONFIG` or `SDL2_LIBS` before building `skyroads-sdl`
+- `--fullscreen` uses desktop fullscreen with the `1280x960` presentation letterboxed to the largest 4:3 area
+- `--borderless` uses a centered borderless `1280x960` window
 
 If you want to run against a different local SkyRoads data directory, you can pass that path instead of `.`.
 
@@ -158,6 +162,7 @@ The `Controls` menu now follows the recovered DOS structure:
 
 - top row selects `keyboard`, `joystick`, or `mouse` control mode
 - bottom row toggles `sound effects` and `music`
+- native extension row toggles `fullscreen` and `borderless`
 - the menu art is composed from `SETMENU` base frame `0`, white cursor overlays `1..5`, and orange selected-state overlays `6..10`
 
 When `mouse` control mode is selected in that menu, the SDL host follows the recovered DOS thresholds:

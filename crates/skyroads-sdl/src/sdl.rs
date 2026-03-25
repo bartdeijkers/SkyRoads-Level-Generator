@@ -28,6 +28,7 @@ const SDL_INIT_VIDEO: u32 = 0x0000_0020;
 const SDL_QUIT: u32 = 0x0100;
 const SDL_WINDOWPOS_CENTERED: c_int = 0x2FFF0000u32 as c_int;
 const SDL_WINDOW_SHOWN: u32 = 0x0000_0004;
+const SDL_WINDOW_FULLSCREEN_DESKTOP: u32 = 0x0000_1001;
 const SDL_RENDERER_SOFTWARE: u32 = 0x0000_0001;
 const SDL_RENDERER_ACCELERATED: u32 = 0x0000_0002;
 const SDL_TEXTUREACCESS_STREAMING: c_int = 1;
@@ -119,6 +120,11 @@ extern "C" {
         src_rect: *const SDL_Rect,
         dst_rect: *const SDL_Rect,
     ) -> c_int;
+    fn SDL_SetWindowFullscreen(window: *mut SDL_Window, flags: u32) -> c_int;
+    fn SDL_SetWindowBordered(window: *mut SDL_Window, bordered: c_int);
+    fn SDL_SetWindowPosition(window: *mut SDL_Window, x: c_int, y: c_int);
+    fn SDL_SetWindowSize(window: *mut SDL_Window, w: c_int, h: c_int);
+    fn SDL_GetWindowSize(window: *mut SDL_Window, w: *mut c_int, h: *mut c_int);
     fn SDL_SetWindowTitle(window: *mut SDL_Window, title: *const c_char);
     fn SDL_SetRenderDrawColor(renderer: *mut SDL_Renderer, r: u8, g: u8, b: u8, a: u8) -> c_int;
     fn SDL_RenderClear(renderer: *mut SDL_Renderer) -> c_int;
@@ -280,6 +286,38 @@ impl Window {
         let title = CString::new(title).map_err(|_| "window title contained NUL".to_string())?;
         unsafe { SDL_SetWindowTitle(self.raw, title.as_ptr()) };
         Ok(())
+    }
+
+    pub fn set_fullscreen_desktop(&self, enabled: bool) -> Result<()> {
+        let flags = if enabled {
+            SDL_WINDOW_FULLSCREEN_DESKTOP
+        } else {
+            0
+        };
+        let result = unsafe { SDL_SetWindowFullscreen(self.raw, flags) };
+        if result != 0 {
+            return Err(last_error());
+        }
+        Ok(())
+    }
+
+    pub fn set_bordered(&self, bordered: bool) {
+        unsafe { SDL_SetWindowBordered(self.raw, if bordered { 1 } else { 0 }) }
+    }
+
+    pub fn set_size(&self, width: i32, height: i32) {
+        unsafe { SDL_SetWindowSize(self.raw, width, height) }
+    }
+
+    pub fn center(&self) {
+        unsafe { SDL_SetWindowPosition(self.raw, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED) }
+    }
+
+    pub fn size(&self) -> (i32, i32) {
+        let mut width = 0;
+        let mut height = 0;
+        unsafe { SDL_GetWindowSize(self.raw, &mut width, &mut height) };
+        (width, height)
     }
 
     pub fn warp_mouse(&self, x: i32, y: i32) {

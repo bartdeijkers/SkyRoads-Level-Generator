@@ -76,6 +76,32 @@ impl ControlMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DisplayMode {
+    #[default]
+    Windowed,
+    Borderless,
+    Fullscreen,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DisplaySettings {
+    pub fullscreen: bool,
+    pub borderless: bool,
+}
+
+impl DisplaySettings {
+    pub fn active_mode(self) -> DisplayMode {
+        if self.fullscreen {
+            DisplayMode::Fullscreen
+        } else if self.borderless {
+            DisplayMode::Borderless
+        } else {
+            DisplayMode::Windowed
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsMenuCursor {
     Keyboard,
@@ -83,16 +109,19 @@ pub enum SettingsMenuCursor {
     Mouse,
     SoundFx,
     Music,
+    Fullscreen,
+    Borderless,
 }
 
 impl SettingsMenuCursor {
-    pub fn overlay_frame_index(self) -> usize {
+    pub fn setmenu_overlay_frame_index(self) -> Option<usize> {
         match self {
-            Self::Keyboard => 1,
-            Self::Joystick => 2,
-            Self::Mouse => 3,
-            Self::SoundFx => 4,
-            Self::Music => 5,
+            Self::Keyboard => Some(1),
+            Self::Joystick => Some(2),
+            Self::Mouse => Some(3),
+            Self::SoundFx => Some(4),
+            Self::Music => Some(5),
+            Self::Fullscreen | Self::Borderless => None,
         }
     }
 
@@ -109,7 +138,7 @@ impl SettingsMenuCursor {
             Self::Keyboard => Some(ControlMode::Keyboard),
             Self::Joystick => Some(ControlMode::Joystick),
             Self::Mouse => Some(ControlMode::Mouse),
-            Self::SoundFx | Self::Music => None,
+            Self::SoundFx | Self::Music | Self::Fullscreen | Self::Borderless => None,
         }
     }
 
@@ -120,6 +149,8 @@ impl SettingsMenuCursor {
             Self::Mouse => 250,
             Self::SoundFx => 120,
             Self::Music => 208,
+            Self::Fullscreen => 120,
+            Self::Borderless => 208,
         }
     }
 
@@ -127,6 +158,7 @@ impl SettingsMenuCursor {
         match self {
             Self::Keyboard | Self::Joystick | Self::Mouse => 0,
             Self::SoundFx | Self::Music => 1,
+            Self::Fullscreen | Self::Borderless => 2,
         }
     }
 
@@ -134,6 +166,7 @@ impl SettingsMenuCursor {
         match row {
             0 => &[Self::Keyboard, Self::Joystick, Self::Mouse],
             1 => &[Self::SoundFx, Self::Music],
+            2 => &[Self::Fullscreen, Self::Borderless],
             _ => &[],
         }
     }
@@ -283,6 +316,7 @@ pub struct HelpMenuScene {
 pub struct SettingsMenuScene {
     pub cursor: SettingsMenuCursor,
     pub control_mode: ControlMode,
+    pub display_settings: DisplaySettings,
     pub sound_fx_enabled: bool,
     pub music_enabled: bool,
 }
@@ -322,6 +356,7 @@ pub struct AttractModeApp {
     menu_song_started: bool,
     control_mode: ControlMode,
     settings_cursor: SettingsMenuCursor,
+    display_settings: DisplaySettings,
     sound_fx_enabled: bool,
     music_enabled: bool,
 }
@@ -352,6 +387,7 @@ impl AttractModeApp {
             menu_song_started: false,
             control_mode: ControlMode::Keyboard,
             settings_cursor: SettingsMenuCursor::Keyboard,
+            display_settings: DisplaySettings::default(),
             sound_fx_enabled: true,
             music_enabled: true,
         }
@@ -363,6 +399,14 @@ impl AttractModeApp {
 
     pub fn control_mode(&self) -> ControlMode {
         self.control_mode
+    }
+
+    pub fn display_settings(&self) -> DisplaySettings {
+        self.display_settings
+    }
+
+    pub fn set_display_settings(&mut self, settings: DisplaySettings) {
+        self.display_settings = settings;
     }
 
     pub fn tick(&mut self, input: AppInput) -> AppTickResult {
@@ -577,6 +621,7 @@ impl AttractModeApp {
             AppMode::SettingsMenu => RenderScene::SettingsMenu(SettingsMenuScene {
                 cursor: self.settings_cursor,
                 control_mode: self.control_mode,
+                display_settings: self.display_settings,
                 sound_fx_enabled: self.sound_fx_enabled,
                 music_enabled: self.music_enabled,
             }),
@@ -613,6 +658,12 @@ impl AttractModeApp {
                 } else {
                     audio_commands.push(AudioCommand::StopSong);
                 }
+            }
+            SettingsMenuCursor::Fullscreen => {
+                self.display_settings.fullscreen = !self.display_settings.fullscreen;
+            }
+            SettingsMenuCursor::Borderless => {
+                self.display_settings.borderless = !self.display_settings.borderless;
             }
             SettingsMenuCursor::Keyboard
             | SettingsMenuCursor::Joystick
@@ -787,8 +838,8 @@ mod tests {
     use skyroads_data::{level_from_road_entry, load_demo_rec_path, load_roads_lzs_path};
 
     use super::{
-        AppInput, AppMode, AttractModeApp, AudioCommand, ControlMode, MenuCursor, RenderScene,
-        SettingsMenuCursor, GAMEPLAY_SONG_INDEX, RENDER_ROWS_BEHIND,
+        AppInput, AppMode, AttractModeApp, AudioCommand, ControlMode, DisplaySettings,
+        MenuCursor, RenderScene, SettingsMenuCursor, GAMEPLAY_SONG_INDEX, RENDER_ROWS_BEHIND,
     };
 
     fn repo_root() -> PathBuf {
@@ -967,6 +1018,10 @@ mod tests {
     #[test]
     fn settings_menu_reflects_current_runtime_settings() {
         let mut app = make_app();
+        app.set_display_settings(DisplaySettings {
+            fullscreen: true,
+            borderless: false,
+        });
         for _ in 0..35 {
             app.tick(AppInput::default());
         }
@@ -986,6 +1041,13 @@ mod tests {
             RenderScene::SettingsMenu(scene) => {
                 assert_eq!(scene.cursor, SettingsMenuCursor::Keyboard);
                 assert_eq!(scene.control_mode, ControlMode::Keyboard);
+                assert_eq!(
+                    scene.display_settings,
+                    DisplaySettings {
+                        fullscreen: true,
+                        borderless: false,
+                    }
+                );
                 assert!(scene.sound_fx_enabled);
                 assert!(scene.music_enabled);
             }
@@ -1048,6 +1110,8 @@ mod tests {
         match music_toggle.render_scene {
             RenderScene::SettingsMenu(scene) => {
                 assert_eq!(scene.cursor, SettingsMenuCursor::Music);
+                assert!(!scene.display_settings.fullscreen);
+                assert!(!scene.display_settings.borderless);
                 assert!(!scene.music_enabled);
                 assert!(scene.sound_fx_enabled);
             }
@@ -1083,11 +1147,82 @@ mod tests {
         match sound_toggle.render_scene {
             RenderScene::SettingsMenu(scene) => {
                 assert_eq!(scene.cursor, SettingsMenuCursor::SoundFx);
+                assert!(!scene.display_settings.fullscreen);
+                assert!(!scene.display_settings.borderless);
                 assert!(!scene.sound_fx_enabled);
                 assert!(scene.music_enabled);
             }
             other => panic!("unexpected render scene: {other:?}"),
         }
+    }
+
+    #[test]
+    fn settings_menu_can_toggle_fullscreen_and_borderless() {
+        let mut app = make_app();
+        for _ in 0..35 {
+            app.tick(AppInput::default());
+        }
+        app.tick(AppInput {
+            space: true,
+            ..AppInput::default()
+        });
+        app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
+        app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        });
+        app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
+
+        let fullscreen_toggle = app.tick(AppInput {
+            down: true,
+            enter: true,
+            ..AppInput::default()
+        });
+        match fullscreen_toggle.render_scene {
+            RenderScene::SettingsMenu(scene) => {
+                assert_eq!(scene.cursor, SettingsMenuCursor::Fullscreen);
+                assert_eq!(
+                    scene.display_settings,
+                    DisplaySettings {
+                        fullscreen: true,
+                        borderless: false,
+                    }
+                );
+            }
+            other => panic!("unexpected render scene: {other:?}"),
+        }
+
+        let borderless_toggle = app.tick(AppInput {
+            right: true,
+            enter: true,
+            ..AppInput::default()
+        });
+        match borderless_toggle.render_scene {
+            RenderScene::SettingsMenu(scene) => {
+                assert_eq!(scene.cursor, SettingsMenuCursor::Borderless);
+                assert_eq!(
+                    scene.display_settings,
+                    DisplaySettings {
+                        fullscreen: true,
+                        borderless: true,
+                    }
+                );
+            }
+            other => panic!("unexpected render scene: {other:?}"),
+        }
+        assert_eq!(
+            app.display_settings(),
+            DisplaySettings {
+                fullscreen: true,
+                borderless: true,
+            }
+        );
     }
 
     #[test]

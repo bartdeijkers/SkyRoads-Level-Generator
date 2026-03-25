@@ -10,7 +10,8 @@ use sdl::{scancode, AudioDevice, Color, Joystick, Rect, Renderer, Sdl, Texture, 
 use skyroads_audio_ref::{AttractAudioAssets, AudioMixer};
 use skyroads_core::{
     controller_state_from_dos_joystick, controller_state_from_dos_mouse, AppInput, AppMode,
-    AttractModeApp, AudioCommand, ControlMode, ControllerState, RenderScene, ShipState,
+    AttractModeApp, AudioCommand, ControlMode, ControllerState, DisplayMode, DisplaySettings,
+    RenderScene, ShipState,
 };
 use skyroads_data::{levels_from_roads_archive, load_demo_rec_path, load_roads_lzs_path};
 use skyroads_renderer_ref::{AttractModeAssets, DebugViewMode, ReferenceRenderer};
@@ -36,6 +37,7 @@ const DOS_MOUSE_CENTER_Y: i32 = FRAMEBUFFER_HEIGHT / 2;
 struct LaunchConfig {
     source_root: PathBuf,
     automation: Option<AutomationMode>,
+    display_settings: DisplaySettings,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -232,9 +234,11 @@ fn run() -> Result<()> {
         .map_err(|error| error.to_string())?;
     let mut audio_mixer = AudioMixer::new(audio_assets);
     let mut app = AttractModeApp::new(levels, demo);
+    app.set_display_settings(config.display_settings);
 
     let sdl = Sdl::init()?;
     let window = Window::new("SkyRoads Native", WINDOW_WIDTH, WINDOW_HEIGHT)?;
+    apply_window_mode(&window, app.display_settings())?;
     let presenter = Renderer::new(&window)?;
     let texture = Texture::new_rgba_streaming(&presenter, 320, 200)?;
     let joystick = Joystick::open_first()?;
@@ -251,14 +255,8 @@ fn run() -> Result<()> {
     let mut current_mode = initial.mode;
     let mut current_scene = initial.render_scene;
     let mut debug_view = DebugViewMode::Off;
+    let mut applied_display_settings = app.display_settings();
     window.set_title(&window_title(current_mode, debug_view))?;
-
-    let display_rect = Rect {
-        x: 0,
-        y: 0,
-        w: WINDOW_WIDTH,
-        h: WINDOW_HEIGHT,
-    };
 
     if config.automation == Some(AutomationMode::GameplaySmoke) {
         println!("SkyRoads automated gameplay smoke test");
@@ -274,7 +272,6 @@ fn run() -> Result<()> {
             &audio_device,
             current_mode,
             current_scene,
-            display_rect,
         );
     }
 
@@ -289,6 +286,7 @@ fn run() -> Result<()> {
             break;
         }
         sdl.pump_events();
+        let mut display_rect = window_display_rect(&window);
         let mut input = latch.sample(sdl.keyboard_state());
         let control_mode = app.control_mode();
         if input.quit {
@@ -338,6 +336,15 @@ fn run() -> Result<()> {
                 }
             }
             current_scene = tick.render_scene;
+            let display_settings = app.display_settings();
+            if display_settings != applied_display_settings {
+                apply_window_mode(&window, display_settings)?;
+                applied_display_settings = display_settings;
+                display_rect = window_display_rect(&window);
+                if app.control_mode() == ControlMode::Mouse && current_mode == AppMode::Gameplay {
+                    center_dos_mouse_for_gameplay(&window, display_rect);
+                }
+            }
             next_tick += timestep;
             step_count += 1;
         }
@@ -345,6 +352,7 @@ fn run() -> Result<()> {
             next_tick = now + timestep;
         }
 
+        display_rect = window_display_rect(&window);
         fill_audio_queue(&audio_device, &mut audio_mixer)?;
         present_scene(
             &presenter,
@@ -377,9 +385,9 @@ fn run_gameplay_smoke(
     audio_device: &AudioDevice,
     mut current_mode: AppMode,
     mut current_scene: RenderScene,
-    display_rect: Rect,
 ) -> Result<()> {
     let mut smoke = GameplaySmokeAutomation::default();
+    let mut display_rect = window_display_rect(window);
     present_scene(
         presenter,
         texture,
@@ -403,6 +411,7 @@ fn run_gameplay_smoke(
             window.set_title(&window_title(current_mode, DebugViewMode::Off))?;
         }
         current_scene = tick.render_scene;
+        display_rect = window_display_rect(window);
         present_scene(
             presenter,
             texture,
@@ -467,11 +476,14 @@ fn fill_audio_queue(audio_device: &AudioDevice, mixer: &mut AudioMixer) -> Resul
 fn parse_args() -> Result<LaunchConfig> {
     let mut source_root = None;
     let mut automation = None;
+    let mut display_settings = DisplaySettings::default();
 
     for arg in env::args().skip(1) {
         match arg.as_str() {
             "-h" | "--help" => return Err(usage().to_string()),
             "--smoke-gameplay" => automation = Some(AutomationMode::GameplaySmoke),
+            "--fullscreen" => display_settings.fullscreen = true,
+            "--borderless" => display_settings.borderless = true,
             _ if arg.starts_with('-') => {
                 return Err(format!("unknown option: {arg}\n{}", usage()));
             }
@@ -486,11 +498,12 @@ fn parse_args() -> Result<LaunchConfig> {
     Ok(LaunchConfig {
         source_root: source_root.unwrap_or_else(|| PathBuf::from(".")),
         automation,
+        display_settings,
     })
 }
 
 fn usage() -> &'static str {
-    "usage: cargo run -p skyroads-sdl -- [--smoke-gameplay] [source_root]"
+    "usage: cargo run -p skyroads-sdl -- [--smoke-gameplay] [--fullscreen] [--borderless] [source_root]"
 }
 
 fn print_controls(source_root: &Path) {
@@ -508,6 +521,9 @@ fn print_controls(source_root: &Path) {
     println!("  keyboard   arrow keys + enter/space");
     println!("  joystick   first SDL joystick/gamepad axis 0/1 + button 0");
     println!("  mouse      DOS-style mouse thresholds");
+    println!("display modes:");
+    println!("  fullscreen  desktop fullscreen");
+    println!("  borderless  centered 1280x960 borderless window");
     println!("mouse mode:");
     println!("  move mouse left/right  steer");
     println!("  move mouse up/down     throttle/brake");
@@ -542,6 +558,58 @@ fn commands_require_flush(commands: &[AudioCommand]) -> bool {
                 | AudioCommand::StopAllSamples
         )
     })
+}
+
+fn apply_window_mode(window: &Window, settings: DisplaySettings) -> Result<()> {
+    match settings.active_mode() {
+        DisplayMode::Fullscreen => window.set_fullscreen_desktop(true)?,
+        DisplayMode::Windowed | DisplayMode::Borderless => {
+            window.set_fullscreen_desktop(false)?;
+            window.set_bordered(settings.active_mode() == DisplayMode::Windowed);
+            window.set_size(WINDOW_WIDTH, WINDOW_HEIGHT);
+            window.center();
+        }
+    }
+    Ok(())
+}
+
+fn window_display_rect(window: &Window) -> Rect {
+    let (window_width, window_height) = window.size();
+    fit_rect_with_aspect(window_width, window_height, WINDOW_WIDTH, WINDOW_HEIGHT)
+}
+
+fn fit_rect_with_aspect(
+    window_width: i32,
+    window_height: i32,
+    content_width: i32,
+    content_height: i32,
+) -> Rect {
+    if window_width <= 0 || window_height <= 0 || content_width <= 0 || content_height <= 0 {
+        return Rect {
+            x: 0,
+            y: 0,
+            w: content_width.max(1),
+            h: content_height.max(1),
+        };
+    }
+
+    let width_from_height =
+        i64::from(window_height) * i64::from(content_width) / i64::from(content_height);
+    let (display_width, display_height) =
+        if width_from_height <= i64::from(window_width) {
+            (width_from_height as i32, window_height)
+        } else {
+            let height_from_width =
+                i64::from(window_width) * i64::from(content_height) / i64::from(content_width);
+            (window_width, height_from_width as i32)
+        };
+
+    Rect {
+        x: (window_width - display_width) / 2,
+        y: (window_height - display_height) / 2,
+        w: display_width.max(1),
+        h: display_height.max(1),
+    }
 }
 
 fn held_only_input(input: AppInput) -> AppInput {

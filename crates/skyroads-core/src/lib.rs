@@ -8,8 +8,9 @@ use skyroads_data::{
 
 pub use app::{
     AppInput, AppMode, AppTickResult, AttractModeApp, AudioCommand, ControlMode,
-    DemoPlaybackState, HelpMenuScene, IntroSequenceState, MainMenuScene, MenuCursor,
-    RenderScene, RoadRenderRow, SettingsMenuCursor, SettingsMenuScene, ShipRenderState,
+    DemoPlaybackState, DisplayMode, DisplaySettings, HelpMenuScene, IntroSequenceState,
+    MainMenuScene, MenuCursor, RenderScene, RoadRenderRow, SettingsMenuCursor,
+    SettingsMenuScene, ShipRenderState,
 };
 pub use gameplay::{
     controller_state_from_demo_input, controller_state_from_dos_joystick,

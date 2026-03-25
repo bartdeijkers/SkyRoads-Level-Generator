@@ -2,7 +2,7 @@ use std::path::Path;
 
 use skyroads_core::{
     renderer_row_state, ControlMode, DemoPlaybackState, HelpMenuScene, IntroSequenceState,
-    MainMenuScene, RenderScene, RoadRenderRow, SettingsMenuScene,
+    MainMenuScene, RenderScene, RoadRenderRow, SettingsMenuCursor, SettingsMenuScene,
 };
 use skyroads_data::{
     load_dashboard_dat_path, load_image_archive_path, load_trekdat_lzs_path, HudFragmentPack,
@@ -28,6 +28,18 @@ const DEBUG_TOPDOWN_INSET_X: i32 = 206;
 const DEBUG_TOPDOWN_INSET_Y: i32 = 28;
 const DEBUG_TOPDOWN_INSET_W: i32 = 104;
 const DEBUG_TOPDOWN_INSET_H: i32 = 84;
+const SETTINGS_WIDGET_TOP: i32 = 146;
+const SETTINGS_WIDGET_WIDTH: i32 = 86;
+const SETTINGS_WIDGET_HEIGHT: i32 = 22;
+const SETTINGS_WIDGET_STATUS_WIDTH: i32 = 28;
+const SETTINGS_WIDGET_STATUS_HEIGHT: i32 = 10;
+
+const SETTINGS_CURSOR_WHITE: RgbColor = RgbColor::new(218, 218, 218);
+const SETTINGS_SELECTED_ORANGE: RgbColor = RgbColor::new(255, 80, 0);
+const SETTINGS_WIDGET_BG: RgbColor = RgbColor::new(10, 16, 34);
+const SETTINGS_WIDGET_OUTLINE: RgbColor = RgbColor::new(76, 86, 120);
+const SETTINGS_WIDGET_TEXT_DIM: RgbColor = RgbColor::new(168, 176, 190);
+const TEXT_SHADOW: RgbColor = RgbColor::new(0, 0, 0);
 
 const DOS_LEFT_CELL_COLUMNS: [usize; 4] = [0, 1, 2, 3];
 const DOS_RIGHT_CELL_COLUMNS: [usize; 4] = [6, 5, 4, 3];
@@ -176,6 +188,18 @@ impl FrameBuffer320x200 {
             for xx in x0..x1 {
                 self.set_pixel(xx, yy, color);
             }
+        }
+    }
+
+    fn stroke_rect(&mut self, x: i32, y: i32, width: i32, height: i32, color: RgbColor) {
+        if width <= 0 || height <= 0 {
+            return;
+        }
+        self.fill_rect(x, y, width, 1, color);
+        self.fill_rect(x, y + height - 1, width, 1, color);
+        if height > 2 {
+            self.fill_rect(x, y + 1, 1, height - 2, color);
+            self.fill_rect(x + width - 1, y + 1, 1, height - 2, color);
         }
     }
 
@@ -386,12 +410,22 @@ impl ReferenceRenderer {
         if scene.music_enabled {
             self.draw_archive_frame(frame, &self.assets.settings_menu, 10, 1.0, 1.0);
         }
-        self.draw_archive_frame(
+        if let Some(frame_index) = scene.cursor.setmenu_overlay_frame_index() {
+            self.draw_archive_frame(frame, &self.assets.settings_menu, frame_index, 1.0, 1.0);
+        }
+        self.draw_settings_display_toggle(
             frame,
-            &self.assets.settings_menu,
-            scene.cursor.overlay_frame_index(),
-            1.0,
-            1.0,
+            "FULLSCREEN",
+            120,
+            scene.display_settings.fullscreen,
+            scene.cursor == SettingsMenuCursor::Fullscreen,
+        );
+        self.draw_settings_display_toggle(
+            frame,
+            "BORDERLESS",
+            208,
+            scene.display_settings.borderless,
+            scene.cursor == SettingsMenuCursor::Borderless,
         );
     }
 
@@ -744,6 +778,19 @@ impl ReferenceRenderer {
         self.draw_text(frame, x, y, text, color, scale);
     }
 
+    fn draw_text_with_shadow(
+        &self,
+        frame: &mut FrameBuffer320x200,
+        x: i32,
+        y: i32,
+        text: &str,
+        color: RgbColor,
+        scale: usize,
+    ) {
+        self.draw_text(frame, x + 1, y + 1, text, TEXT_SHADOW, scale);
+        self.draw_text(frame, x, y, text, color, scale);
+    }
+
     fn draw_text(
         &self,
         frame: &mut FrameBuffer320x200,
@@ -779,6 +826,106 @@ impl ReferenceRenderer {
             }
             cursor += (4 * scale) as i32;
         }
+    }
+
+    fn draw_settings_display_toggle(
+        &self,
+        frame: &mut FrameBuffer320x200,
+        label: &str,
+        center_x: i32,
+        enabled: bool,
+        selected: bool,
+    ) {
+        let widget_x = center_x - SETTINGS_WIDGET_WIDTH / 2;
+        let widget_y = SETTINGS_WIDGET_TOP;
+        let label_color = if enabled {
+            SETTINGS_SELECTED_ORANGE
+        } else {
+            SETTINGS_CURSOR_WHITE
+        };
+        let status_text = if enabled { "ON" } else { "OFF" };
+        let status_color = if enabled {
+            SETTINGS_SELECTED_ORANGE
+        } else if selected {
+            SETTINGS_CURSOR_WHITE
+        } else {
+            SETTINGS_WIDGET_OUTLINE
+        };
+
+        frame.fill_rect(
+            widget_x,
+            widget_y,
+            SETTINGS_WIDGET_WIDTH,
+            SETTINGS_WIDGET_HEIGHT,
+            SETTINGS_WIDGET_BG,
+        );
+        frame.stroke_rect(
+            widget_x,
+            widget_y,
+            SETTINGS_WIDGET_WIDTH,
+            SETTINGS_WIDGET_HEIGHT,
+            SETTINGS_WIDGET_OUTLINE,
+        );
+        if selected {
+            frame.stroke_rect(
+                widget_x - 2,
+                widget_y - 2,
+                SETTINGS_WIDGET_WIDTH + 4,
+                SETTINGS_WIDGET_HEIGHT + 4,
+                SETTINGS_CURSOR_WHITE,
+            );
+        }
+
+        let label_width = text_pixel_width(label, 2);
+        self.draw_text_with_shadow(
+            frame,
+            center_x - label_width / 2,
+            widget_y + 2,
+            label,
+            label_color,
+            2,
+        );
+
+        let status_x = center_x - SETTINGS_WIDGET_STATUS_WIDTH / 2;
+        let status_y = widget_y + 11;
+        frame.fill_rect(
+            status_x,
+            status_y,
+            SETTINGS_WIDGET_STATUS_WIDTH,
+            SETTINGS_WIDGET_STATUS_HEIGHT,
+            SETTINGS_WIDGET_BG,
+        );
+        if enabled {
+            frame.fill_rect(
+                status_x + 1,
+                status_y + 1,
+                SETTINGS_WIDGET_STATUS_WIDTH - 2,
+                SETTINGS_WIDGET_STATUS_HEIGHT - 2,
+                SETTINGS_SELECTED_ORANGE,
+            );
+        }
+        frame.stroke_rect(
+            status_x,
+            status_y,
+            SETTINGS_WIDGET_STATUS_WIDTH,
+            SETTINGS_WIDGET_STATUS_HEIGHT,
+            status_color,
+        );
+
+        let status_text_color = if enabled {
+            TEXT_SHADOW
+        } else {
+            SETTINGS_WIDGET_TEXT_DIM
+        };
+        let status_text_width = text_pixel_width(status_text, 1);
+        self.draw_text_with_shadow(
+            frame,
+            center_x - status_text_width / 2,
+            status_y + 2,
+            status_text,
+            status_text_color,
+            1,
+        );
     }
 
     fn draw_debug_overlay(&self, frame: &mut FrameBuffer320x200, scene: &DemoPlaybackState) {
@@ -2185,7 +2332,10 @@ pub fn frame_hash(frame: &FrameBuffer320x200) -> u64 {
 mod tests {
     use std::path::PathBuf;
 
-    use skyroads_core::{AppInput, AttractModeApp, ControlMode, RenderScene, SettingsMenuCursor, SettingsMenuScene};
+    use skyroads_core::{
+        AppInput, AttractModeApp, ControlMode, DisplaySettings, RenderScene,
+        SettingsMenuCursor, SettingsMenuScene,
+    };
     use skyroads_data::{level_from_road_entry, load_demo_rec_path, load_roads_lzs_path, GROUND_Y};
 
     use super::{
@@ -2350,12 +2500,17 @@ mod tests {
         let keyboard = renderer.render_scene(&RenderScene::SettingsMenu(SettingsMenuScene {
             cursor: SettingsMenuCursor::Keyboard,
             control_mode: ControlMode::Keyboard,
+            display_settings: DisplaySettings::default(),
             sound_fx_enabled: true,
             music_enabled: true,
         }));
         let mouse = renderer.render_scene(&RenderScene::SettingsMenu(SettingsMenuScene {
-            cursor: SettingsMenuCursor::Music,
+            cursor: SettingsMenuCursor::Borderless,
             control_mode: ControlMode::Mouse,
+            display_settings: DisplaySettings {
+                fullscreen: true,
+                borderless: true,
+            },
             sound_fx_enabled: false,
             music_enabled: false,
         }));

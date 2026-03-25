@@ -11,6 +11,14 @@ that baseline.
 
 ## [Unreleased]
 
+### Added
+- Added `--fullscreen` and `--borderless` launch flags to the SDL host, plus runtime window-mode switching between windowed, borderless, and desktop-fullscreen presentation.
+- Added fullscreen and borderless toggles to the in-game controls/settings menu so display mode can be changed without restarting.
+
+### Changed
+- Updated the settings-menu renderer to extend the recovered `SETMENU` layout with native fullscreen and borderless toggle widgets that follow the existing white-cursor/orange-selected visual language.
+- Updated SDL presentation and mouse-coordinate mapping to preserve the `320x200` framebuffer aspect ratio correctly when fullscreen or borderless modes change the window size.
+
 ## [0.2.0] - 2026-03-24
 
 ### Added
