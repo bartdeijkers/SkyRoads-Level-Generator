@@ -277,7 +277,8 @@ pub struct ShipRenderState {
     pub turn_input: i8,
     pub accel_input: i8,
     pub jump_input: bool,
-    pub death_frame_index: Option<usize>,
+    pub explosion_timer: usize,
+    pub non_alive_frame_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -569,7 +570,13 @@ impl AttractModeApp {
         if self.gameplay_session.ship.state != crate::ShipState::Alive {
             if input.enter || input.space {
                 self.start_gameplay(audio_commands);
+                return;
             }
+            if self.gameplay_session.post_death_animation_complete() {
+                return;
+            }
+            let result = self.gameplay_session.run_frame(ControllerState::NEUTRAL);
+            emit_sfx_for_events(&result.events, audio_commands);
             return;
         }
 
@@ -827,7 +834,8 @@ fn build_ship_render_state(session: &GameplaySession) -> ShipRenderState {
         turn_input: session.last_controls.turn_input,
         accel_input: session.last_controls.accel_input,
         jump_input: session.last_controls.jump_input,
-        death_frame_index: session.death_frame_index,
+        explosion_timer: session.explosion_timer,
+        non_alive_frame_count: session.non_alive_frame_count,
     }
 }
 
@@ -1226,14 +1234,36 @@ mod tests {
     }
 
     #[test]
-    fn exploding_ship_render_state_tracks_death_frame() {
+    fn exploding_ship_render_state_tracks_dos_death_counters() {
         let mut app = make_app();
         app.gameplay_session.ship.state = crate::ShipState::Exploded;
-        app.gameplay_session.death_frame_index = Some(5);
+        app.gameplay_session.expected_ship = app.gameplay_session.ship;
+        app.gameplay_session.explosion_timer = 5;
+        app.gameplay_session.non_alive_frame_count = 14;
         app.gameplay_session.frame_index = 14;
         let scene = app.current_gameplay_scene();
         assert_eq!(scene.ship.state, crate::ShipState::Exploded);
-        assert_eq!(scene.ship.death_frame_index, Some(5));
+        assert_eq!(scene.ship.explosion_timer, 5);
+        assert_eq!(scene.ship.non_alive_frame_count, 14);
+    }
+
+    #[test]
+    fn gameplay_keeps_animating_dead_ship_until_dos_window_finishes() {
+        let mut app = make_app();
+        app.gameplay_session.ship.state = crate::ShipState::Exploded;
+        app.gameplay_session.ship.y_velocity = -1.0;
+        app.gameplay_session.expected_ship = app.gameplay_session.ship;
+        app.gameplay_session.explosion_timer = 2;
+
+        let before = app.gameplay_session.frame_index;
+        app.tick_gameplay(AppInput::default(), &mut Vec::new());
+        assert!(app.gameplay_session.frame_index > before);
+
+        app.gameplay_session.explosion_timer = 0x2B;
+        app.gameplay_session.expected_ship = app.gameplay_session.ship;
+        let frozen_at = app.gameplay_session.frame_index;
+        app.tick_gameplay(AppInput::default(), &mut Vec::new());
+        assert_eq!(app.gameplay_session.frame_index, frozen_at);
     }
 
     #[test]

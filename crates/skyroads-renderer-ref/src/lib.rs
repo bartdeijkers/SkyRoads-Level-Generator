@@ -19,7 +19,8 @@ const VIEW_BOTTOM_Y: usize = DASHBOARD_TOP;
 const SHIP_SCALE: usize = 1;
 const SHIP_SCREEN_X: i32 = 160;
 const SHIP_SCREEN_Y: i32 = 84;
-const GAME_OVER_OVERLAY_DELAY_FRAMES: usize = 24;
+const DOS_EXPLOSION_ANIMATION_TICKS: usize = 0x2A;
+const DOS_NON_ALIVE_ANIMATION_TICKS: usize = 0x6C;
 const DEBUG_PANEL_X: i32 = 8;
 const DEBUG_PANEL_Y: i32 = 8;
 const DEBUG_PANEL_W: i32 = 124;
@@ -530,12 +531,7 @@ impl ReferenceRenderer {
         let draw_width = usize::from(sprite.width) * SHIP_SCALE;
         let draw_height = usize::from(sprite.height) * SHIP_SCALE;
         let x = placement.sprite_center_x - (draw_width as i32 / 2);
-        let explode_offset = if visual.sprite_kind == ShipSpriteKind::Exploding {
-            -2
-        } else {
-            0
-        };
-        let y = placement.sprite_center_y + explode_offset - (draw_height as i32 / 2);
+        let y = placement.sprite_center_y - (draw_height as i32 / 2);
         self.draw_sprite(frame, sprite, x, y, SHIP_SCALE);
     }
 
@@ -1764,12 +1760,11 @@ fn derive_ship_visual_state(scene: &DemoPlaybackState) -> DerivedShipVisualState
     let ship_lane_bias = (lane_bias * 30.0).round() as i32;
     let ship_screen_bias_x = ship_lane_bias.clamp(-96, 96);
     let height_delta = scene.ship.y_position - GROUND_Y;
-    let vertical_offset_y = (-height_delta * 0.55).round().clamp(-26.0, 18.0) as i32;
-    let explosion_frame = scene
-        .ship
-        .death_frame_index
-        .map(|death_frame| scene.frame_index.saturating_sub(death_frame) / 3)
-        .unwrap_or(0);
+    // DOS converts the ship/surface height delta back from 8.8 fixed-point with a
+    // plain `>> 7`, so the screen-space Y track follows world Y one-to-one instead
+    // of clamping into a narrow fallback band.
+    let vertical_offset_y = (-height_delta).round() as i32;
+    let explosion_frame = scene.ship.explosion_timer / 3;
 
     DerivedShipVisualState {
         sprite_kind,
@@ -1786,13 +1781,27 @@ fn derive_ship_visual_state(scene: &DemoPlaybackState) -> DerivedShipVisualState
 }
 
 fn should_draw_game_over_overlay(scene: &DemoPlaybackState) -> bool {
-    if scene.snapshot.craft_state == skyroads_core::ShipState::Alive {
+    let ship_state = scene.snapshot.craft_state;
+    if ship_state == skyroads_core::ShipState::Alive {
         return false;
     }
-    let Some(death_frame_index) = scene.ship.death_frame_index else {
-        return true;
-    };
-    scene.frame_index.saturating_sub(death_frame_index) >= GAME_OVER_OVERLAY_DELAY_FRAMES
+
+    if scene.ship.explosion_timer != 0
+        && scene.ship.explosion_timer <= DOS_EXPLOSION_ANIMATION_TICKS
+    {
+        return false;
+    }
+
+    match ship_state {
+        skyroads_core::ShipState::Exploded => true,
+        skyroads_core::ShipState::Fallen if scene.ship.explosion_timer != 0 => true,
+        skyroads_core::ShipState::Fallen
+        | skyroads_core::ShipState::OutOfFuel
+        | skyroads_core::ShipState::OutOfOxygen => {
+            scene.ship.non_alive_frame_count >= DOS_NON_ALIVE_ANIMATION_TICKS
+        }
+        skyroads_core::ShipState::Alive => false,
+    }
 }
 
 fn ship_screen_placement(
@@ -2341,7 +2350,7 @@ mod tests {
     use super::{
         derive_ship_visual_state, dos_ship_vertical_state, frame_hash, ship_screen_placement,
         should_draw_game_over_overlay, AttractModeAssets, CarAtlas, FrameBuffer320x200,
-        ReferenceRenderer, GAME_OVER_OVERLAY_DELAY_FRAMES, SHIP_SCREEN_X, SHIP_SCREEN_Y,
+        ReferenceRenderer, DOS_EXPLOSION_ANIMATION_TICKS, DOS_NON_ALIVE_ANIMATION_TICKS,
     };
 
     #[derive(Debug, Clone, Copy)]
@@ -2353,8 +2362,6 @@ mod tests {
         is_on_ground: bool,
         is_going_up: bool,
         jump_input: bool,
-        ship_screen_bias_x: i32,
-        vertical_offset_y: i32,
         jumping: bool,
         vertical_state: i32,
         sprite_center_x: i32,
@@ -2439,8 +2446,6 @@ mod tests {
             is_on_ground: scene.ship.is_on_ground,
             is_going_up: scene.ship.is_going_up,
             jump_input: scene.ship.jump_input,
-            ship_screen_bias_x: visual.ship_screen_bias_x,
-            vertical_offset_y: visual.vertical_offset_y,
             jumping: visual.jumping,
             vertical_state: dos_ship_vertical_state(scene),
             sprite_center_x: placement.sprite_center_x,
@@ -2658,7 +2663,7 @@ mod tests {
     }
 
     #[test]
-    fn grounded_throttle_keeps_ship_pose_stable_and_airborne_ship_uses_fallback_anchor() {
+    fn grounded_throttle_keeps_ship_pose_stable_before_fall() {
         let scenes = gameplay_scenes_after_steps(
             AppInput {
                 up_held: true,
@@ -2737,59 +2742,49 @@ mod tests {
             grounded.len(),
             max_shadow_x_delta
         );
+    }
 
-        let airborne = probes
-            .iter()
-            .find(|probe| probe.state != skyroads_core::ShipState::Alive || !probe.is_on_ground)
-            .copied()
-            .expect("expected sustained throttle to reach an airborne or fallen frame");
-        let expected_fallback_x = SHIP_SCREEN_X + airborne.ship_screen_bias_x;
-        let expected_sprite_y = SHIP_SCREEN_Y + airborne.vertical_offset_y;
-        let expected_shadow_y = SHIP_SCREEN_Y + 18;
-        assert_eq!(
-            airborne.sprite_center_x, expected_fallback_x,
-            "expected airborne ship sprite to use fallback X anchor at frame {}, got x={} expected={} world_y={} z={} state={:?}",
-            airborne.frame_index,
-            airborne.sprite_center_x,
-            expected_fallback_x,
-            airborne.y_position,
-            airborne.z_position,
-            airborne.state
+    #[test]
+    fn explosion_visual_state_follows_dos_explosion_timer() {
+        let mut scene = gameplay_scene_after_steps(
+            AppInput {
+                up_held: true,
+                ..AppInput::default()
+            },
+            4,
         );
-        assert_eq!(
-            airborne.shadow_center_x, expected_fallback_x,
-            "expected airborne shadow to use fallback X anchor at frame {}, got x={} expected={} world_y={} z={} state={:?}",
-            airborne.frame_index,
-            airborne.shadow_center_x,
-            expected_fallback_x,
-            airborne.y_position,
-            airborne.z_position,
-            airborne.state
+        scene.ship.state = skyroads_core::ShipState::Exploded;
+        scene.snapshot.craft_state = skyroads_core::ShipState::Exploded;
+        scene.ship.explosion_timer = 8;
+
+        let visual = derive_ship_visual_state(&scene);
+        assert_eq!(visual.explosion_frame, 2);
+    }
+
+    #[test]
+    fn fallen_ship_can_continue_below_the_playfield() {
+        let mut scene = gameplay_scene_after_steps(
+            AppInput {
+                up_held: true,
+                ..AppInput::default()
+            },
+            4,
         );
-        assert_eq!(
-            airborne.sprite_center_y, expected_sprite_y,
-            "expected airborne ship sprite to use fallback Y anchor at frame {}, got y={} expected={} world_y={} z={} state={:?}",
-            airborne.frame_index,
-            airborne.sprite_center_y,
-            expected_sprite_y,
-            airborne.y_position,
-            airborne.z_position,
-            airborne.state
-        );
-        assert_eq!(
-            airborne.shadow_center_y, expected_shadow_y,
-            "expected airborne shadow to use fallback Y anchor at frame {}, got y={} expected={} world_y={} z={} state={:?}",
-            airborne.frame_index,
-            airborne.shadow_center_y,
-            expected_shadow_y,
-            airborne.y_position,
-            airborne.z_position,
-            airborne.state
+        scene.ship.state = skyroads_core::ShipState::Fallen;
+        scene.snapshot.craft_state = skyroads_core::ShipState::Fallen;
+        scene.ship.y_position = GROUND_Y - 140.0;
+
+        let visual = derive_ship_visual_state(&scene);
+        let placement = ship_screen_placement(&scene, &visual);
+        assert!(
+            placement.sprite_center_y > i32::from(skyroads_data::SCREEN_HEIGHT),
+            "expected fallen ship to move off-screen instead of clamping in view, got y={}",
+            placement.sprite_center_y
         );
     }
 
     #[test]
-    fn game_over_overlay_waits_before_covering_gameplay() {
+    fn game_over_overlay_waits_for_dos_explosion_window() {
         let mut scene = gameplay_scene_after_steps(
             AppInput {
                 up_held: true,
@@ -2799,22 +2794,40 @@ mod tests {
         );
         scene.snapshot.craft_state = skyroads_core::ShipState::Exploded;
         scene.ship.state = skyroads_core::ShipState::Exploded;
-        scene.ship.death_frame_index = Some(scene.frame_index);
+        scene.ship.explosion_timer = DOS_EXPLOSION_ANIMATION_TICKS;
         assert!(
             !should_draw_game_over_overlay(&scene),
             "expected fresh death frame to keep gameplay visible"
         );
 
-        scene.frame_index += GAME_OVER_OVERLAY_DELAY_FRAMES - 1;
-        assert!(
-            !should_draw_game_over_overlay(&scene),
-            "expected overlay to stay hidden until the full delay elapsed"
-        );
-
-        scene.frame_index += 1;
+        scene.ship.explosion_timer += 1;
         assert!(
             should_draw_game_over_overlay(&scene),
             "expected overlay to appear after the delay elapsed"
+        );
+    }
+
+    #[test]
+    fn game_over_overlay_waits_for_dos_non_alive_window() {
+        let mut scene = gameplay_scene_after_steps(
+            AppInput {
+                up_held: true,
+                ..AppInput::default()
+            },
+            4,
+        );
+        scene.snapshot.craft_state = skyroads_core::ShipState::Fallen;
+        scene.ship.state = skyroads_core::ShipState::Fallen;
+        scene.ship.non_alive_frame_count = DOS_NON_ALIVE_ANIMATION_TICKS - 1;
+        assert!(
+            !should_draw_game_over_overlay(&scene),
+            "expected fallen ship to stay visible until the DOS death window ends"
+        );
+
+        scene.ship.non_alive_frame_count += 1;
+        assert!(
+            should_draw_game_over_overlay(&scene),
+            "expected fallen ship to hand over to the overlay after the DOS window"
         );
     }
 

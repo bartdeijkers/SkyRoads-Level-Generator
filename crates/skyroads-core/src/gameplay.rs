@@ -106,6 +106,7 @@ impl Ship {
         level: &Level,
         expected: &mut Self,
         controls: ControllerState,
+        explosion_timer_active: bool,
     ) -> Vec<GameplayEvent> {
         let mut events = Vec::new();
         self.sanitize_parameters();
@@ -128,7 +129,7 @@ impl Ship {
         );
         self.update_jump(can_control, is_above_nothing, controls.jump_input, level);
         self.update_jump_o_master(controls, level);
-        self.update_gravity(level.gravity_acceleration());
+        self.update_gravity(level.gravity_acceleration(), explosion_timer_active);
 
         *expected = *self;
         expected.attempt_motion(is_on_decel_pad);
@@ -166,10 +167,10 @@ impl Ship {
             TouchEffect::Accelerate => self.z_velocity += 0x12F as f64 / 0x10000 as f64,
             TouchEffect::Decelerate => self.z_velocity -= 0x12F as f64 / 0x10000 as f64,
             TouchEffect::Kill => {
-                if self.state != ShipState::Exploded {
+                if self.state == ShipState::Alive {
                     events.push(GameplayEvent::ShipExploded);
+                    self.state = ShipState::Exploded;
                 }
-                self.state = ShipState::Exploded;
             }
             TouchEffect::RefillOxygen => {
                 if self.state == ShipState::Alive {
@@ -264,7 +265,17 @@ impl Ship {
         }
     }
 
-    fn update_gravity(&mut self, gravity_acceleration: f64) {
+    fn update_gravity(&mut self, gravity_acceleration: f64, explosion_timer_active: bool) {
+        if explosion_timer_active {
+            let explosion_lift_step = 0x27 as f64 / 0x80 as f64;
+            let explosion_lift_cap = 0x47 as f64 / 0x80 as f64;
+            if self.y_velocity < 0.0 {
+                self.y_velocity = 0.0;
+            }
+            self.y_velocity = (self.y_velocity + explosion_lift_step).min(explosion_lift_cap);
+            return;
+        }
+
         if self.y_position >= 0x28 as f64 {
             self.y_velocity += gravity_acceleration;
             self.y_velocity = s_floor(self.y_velocity * 0x80 as f64) / 0x80 as f64;
@@ -274,7 +285,6 @@ impl Ship {
     }
 
     fn attempt_motion(&mut self, on_decel_pad: bool) {
-        let is_dead = self.state != ShipState::Alive;
         let mut motion_vel = self.z_velocity;
         if !on_decel_pad {
             motion_vel += 0x618 as f64 / 0x10000 as f64;
@@ -283,11 +293,9 @@ impl Ship {
             * s_floor(motion_vel * 0x10000 as f64)
             / 0x10000 as f64
             + self.slide_amount;
-        if !is_dead {
-            self.x_position += x_motion;
-            self.y_position += self.y_velocity;
-            self.z_position += self.z_velocity;
-        }
+        self.x_position += x_motion;
+        self.y_position += self.y_velocity;
+        self.z_position += self.z_velocity;
     }
 
     fn move_to(&mut self, dest: &Self, level: &Level) {
@@ -409,10 +417,13 @@ impl Ship {
 
     fn handle_collision(&mut self, expected: &Self, events: &mut Vec<GameplayEvent>) {
         if (self.z_position - expected.z_position).abs() > 0.01 {
+            if self.state != ShipState::Alive {
+                return;
+            }
             if self.z_velocity < (1.0 / 3.0) * (0x2AAA as f64 / 0x10000 as f64) {
                 self.z_velocity = 0.0;
                 events.push(GameplayEvent::ShipBumpedWall);
-            } else if self.state != ShipState::Exploded {
+            } else {
                 self.state = ShipState::Exploded;
                 events.push(GameplayEvent::ShipExploded);
             }
@@ -482,6 +493,10 @@ impl Ship {
     }
 
     fn handle_oxygen_and_fuel(&mut self, level: &Level) {
+        if self.state != ShipState::Alive {
+            return;
+        }
+
         self.oxygen_remaining -= 0x7530 as f64 / (0x24 as f64 * level.oxygen as f64);
         if self.oxygen_remaining <= 0.0 {
             self.oxygen_remaining = 0.0;
@@ -498,16 +513,6 @@ impl Ship {
     fn handle_fall_below_ground(&mut self) {
         if self.state == ShipState::Alive && self.y_position < GROUND_Y {
             self.state = ShipState::Fallen;
-            self.y_position = self.y_position.min(GROUND_Y);
-            self.y_velocity = 0.0;
-            self.z_velocity = 0.0;
-            self.x_movement_base = 0.0;
-            self.slide_amount = 0.0;
-            self.jump_o_master_velocity_delta = 0.0;
-            self.jump_o_master_in_use = false;
-            self.has_run_jump_o_master = false;
-            self.is_on_ground = false;
-            self.is_going_up = false;
         }
     }
 
@@ -642,7 +647,8 @@ pub struct GameplaySession {
     pub expected_ship: Ship,
     pub did_win: bool,
     pub(crate) last_controls: ControllerState,
-    pub(crate) death_frame_index: Option<usize>,
+    pub(crate) explosion_timer: usize,
+    pub(crate) non_alive_frame_count: usize,
     pub(crate) frame_index: usize,
 }
 
@@ -655,7 +661,8 @@ impl GameplaySession {
             expected_ship: ship,
             did_win: false,
             last_controls: ControllerState::NEUTRAL,
-            death_frame_index: None,
+            explosion_timer: 0,
+            non_alive_frame_count: 0,
             frame_index: 0,
         }
     }
@@ -664,17 +671,46 @@ impl GameplaySession {
         self.frame_index
     }
 
+    pub fn post_death_animation_complete(&self) -> bool {
+        if self.ship.state == ShipState::Alive {
+            return false;
+        }
+
+        if self.explosion_timer != 0 && self.explosion_timer <= 0x2A {
+            return false;
+        }
+
+        match self.ship.state {
+            ShipState::Exploded => true,
+            ShipState::Fallen if self.explosion_timer != 0 => true,
+            ShipState::Fallen | ShipState::OutOfFuel | ShipState::OutOfOxygen => {
+                self.non_alive_frame_count >= 0x6C
+            }
+            ShipState::Alive => false,
+        }
+    }
+
     pub fn run_frame(&mut self, controls: ControllerState) -> GameplayFrameResult {
         self.last_controls = controls;
         let previous_state = self.ship.state;
         let events = self
             .ship
-            .update(&self.level, &mut self.expected_ship, controls);
-        if previous_state == ShipState::Alive
-            && self.ship.state != ShipState::Alive
-            && self.death_frame_index.is_none()
-        {
-            self.death_frame_index = Some(self.frame_index);
+            .update(
+                &self.level,
+                &mut self.expected_ship,
+                controls,
+                self.explosion_timer != 0,
+            );
+        let started_explosion =
+            previous_state != ShipState::Exploded && self.ship.state == ShipState::Exploded;
+        if started_explosion && self.explosion_timer == 0 {
+            self.explosion_timer = 1;
+        }
+        if self.ship.state != ShipState::Alive {
+            self.non_alive_frame_count += 1;
+        }
+        if self.explosion_timer != 0 {
+            self.explosion_timer += 1;
         }
         if self.ship.z_position >= self.level.length() as f64 - 0.5
             && self.level.is_inside_tunnel(
@@ -789,6 +825,10 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
     }
 
+    fn sync_expected_ship(session: &mut GameplaySession) {
+        session.expected_ship = session.ship;
+    }
+
     #[test]
     fn demo_input_maps_to_controller_state() {
         let demo = load_demo_rec_path(repo_root().join("DEMO.REC")).unwrap();
@@ -898,7 +938,7 @@ mod tests {
     }
 
     #[test]
-    fn falling_below_ground_latches_non_alive_state() {
+    fn falling_below_ground_latches_non_alive_state_without_freezing_motion() {
         let roads = load_roads_lzs_path(repo_root().join("ROADS.LZS")).unwrap();
         let level = level_from_road_entry(&roads.roads[0]);
         let mut session = GameplaySession::new(level);
@@ -907,18 +947,20 @@ mod tests {
         session.ship.y_velocity = -2.0;
         session.ship.z_velocity = 0.1;
         session.ship.x_movement_base = 1.0;
+        sync_expected_ship(&mut session);
 
         let frame = session.run_frame(ControllerState::NEUTRAL);
         assert_eq!(frame.snapshot.craft_state, ShipState::Fallen);
-        assert!(session.death_frame_index.is_some());
-        assert_eq!(session.ship.z_velocity, 0.0);
-        assert_eq!(session.ship.y_velocity, 0.0);
-        assert_eq!(session.ship.x_movement_base, 0.0);
+        assert_eq!(session.non_alive_frame_count, 1);
+        assert_eq!(session.explosion_timer, 0);
+        assert!(session.ship.z_velocity > 0.0);
+        assert!(session.ship.y_velocity < 0.0);
+        assert!(session.ship.x_movement_base > 0.0);
         assert!(frame.events.is_empty());
     }
 
     #[test]
-    fn fallen_ship_no_longer_advances_through_level() {
+    fn fallen_ship_keeps_advancing_through_level() {
         let roads = load_roads_lzs_path(repo_root().join("ROADS.LZS")).unwrap();
         let level = level_from_road_entry(&roads.roads[0]);
         let mut session = GameplaySession::new(level);
@@ -929,13 +971,36 @@ mod tests {
         session.ship.z_velocity = 0.12;
         session.ship.y_velocity = -1.0;
         session.ship.x_movement_base = 0.5;
+        sync_expected_ship(&mut session);
 
         let before = session.ship;
         let frame = session.run_frame(ControllerState::new(1, 1, true));
         assert_eq!(frame.snapshot.craft_state, ShipState::Fallen);
-        assert_eq!(session.ship.x_position, before.x_position);
-        assert_eq!(session.ship.y_position, before.y_position);
-        assert_eq!(session.ship.z_position, before.z_position);
+        assert!(session.ship.x_position != before.x_position);
+        assert!(session.ship.y_position < before.y_position);
+        assert!(session.ship.z_position > before.z_position);
+        assert_eq!(session.non_alive_frame_count, 1);
         assert!(frame.events.is_empty());
+    }
+
+    #[test]
+    fn exploded_ship_uses_dos_lift_while_explosion_timer_runs() {
+        let roads = load_roads_lzs_path(repo_root().join("ROADS.LZS")).unwrap();
+        let level = level_from_road_entry(&roads.roads[0]);
+        let mut session = GameplaySession::new(level);
+        session.ship.state = ShipState::Exploded;
+        session.ship.y_position = GROUND_Y;
+        session.ship.y_velocity = -1.0;
+        session.explosion_timer = 2;
+        sync_expected_ship(&mut session);
+
+        let before_y = session.ship.y_position;
+        let frame = session.run_frame(ControllerState::NEUTRAL);
+
+        assert_eq!(frame.snapshot.craft_state, ShipState::Exploded);
+        assert_eq!(session.ship.y_velocity, 0x27 as f64 / 0x80 as f64);
+        assert!(session.ship.y_position > before_y);
+        assert_eq!(session.explosion_timer, 3);
+        assert_eq!(session.non_alive_frame_count, 1);
     }
 }
