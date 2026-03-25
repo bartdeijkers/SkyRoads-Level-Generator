@@ -24,8 +24,10 @@ pub use demo::{
 pub use error::{Error, Result};
 pub use exe::{
     load_skyroads_exe_bytes, load_skyroads_exe_path, ExeDispatchEntry, ExeRelocation,
-    ExeRuntimeDispatchTable, ExeRuntimeTables, ExeRuntimeU8Table, SkyroadsExe,
-    EXE_READER_SEGMENT_BASE,
+    ExeRuntimeDispatchTable, ExeRuntimeTables, ExeRuntimeU8Table, ExeShipRuntimeTables,
+    SkyroadsExe, DOS_SHIP_LANE_COUNT, DOS_SHIP_SHADOW_MASK_BYTES, DOS_SHIP_SHADOW_MASK_COUNT,
+    DOS_SHIP_SHADOW_MASK_HEIGHT, DOS_SHIP_SHADOW_MASK_WIDTH, DOS_SHIP_SURFACE_HEIGHT_COUNT,
+    DOS_SHIP_THRUST_PHASE_COUNT, EXE_READER_SEGMENT_BASE,
 };
 pub use image::{
     load_image_archive_bytes, load_image_archive_path, ImageArchive, ImageArchiveKind, ImageFrame,

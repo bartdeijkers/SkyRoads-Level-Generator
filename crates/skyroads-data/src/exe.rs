@@ -6,6 +6,19 @@ use crate::{Error, Result};
 pub const EXE_READER_SEGMENT_BASE: u16 = 0x66E;
 const RUNTIME_TILE_CLASS_OFFSET: u16 = 0x0B77;
 const RUNTIME_DISPATCH_OFFSET: u16 = 0x0B7F;
+const RUNTIME_SHIP_X_BIAS_OFFSET: u16 = 0x0038;
+const RUNTIME_SURFACE_HEIGHT_OFFSET: u16 = 0x00DE;
+const RUNTIME_THRUST_PHASE_OFFSET: u16 = 0x00EA;
+const RUNTIME_SHADOW_MASK_OFFSET: u16 = 0x065E;
+
+pub const DOS_SHIP_LANE_COUNT: usize = 7;
+pub const DOS_SHIP_SURFACE_HEIGHT_COUNT: usize = 6;
+pub const DOS_SHIP_THRUST_PHASE_COUNT: usize = 4;
+pub const DOS_SHIP_SHADOW_MASK_WIDTH: usize = 29;
+pub const DOS_SHIP_SHADOW_MASK_HEIGHT: usize = 9;
+pub const DOS_SHIP_SHADOW_MASK_BYTES: usize =
+    DOS_SHIP_SHADOW_MASK_WIDTH * DOS_SHIP_SHADOW_MASK_HEIGHT;
+pub const DOS_SHIP_SHADOW_MASK_COUNT: usize = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExeRelocation {
@@ -43,6 +56,15 @@ pub struct ExeRuntimeDispatchTable {
 pub struct ExeRuntimeTables {
     pub tile_class_by_low3: ExeRuntimeU8Table,
     pub draw_dispatch_by_type: ExeRuntimeDispatchTable,
+    pub ship: ExeShipRuntimeTables,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExeShipRuntimeTables {
+    pub screen_x_bias_by_lane: [i16; DOS_SHIP_LANE_COUNT],
+    pub surface_height_by_dispatch_kind: [u16; DOS_SHIP_SURFACE_HEIGHT_COUNT],
+    pub thrust_phase_by_cycle: [u16; DOS_SHIP_THRUST_PHASE_COUNT],
+    pub shadow_masks: [[u8; DOS_SHIP_SHADOW_MASK_BYTES]; DOS_SHIP_SHADOW_MASK_COUNT],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -214,9 +236,32 @@ fn extract_runtime_tables(
         }
     };
 
+    let ship = ExeShipRuntimeTables {
+        screen_x_bias_by_lane: read_i16_table::<DOS_SHIP_LANE_COUNT>(
+            data,
+            header_bytes,
+            exe_reader_base_file_offset,
+            RUNTIME_SHIP_X_BIAS_OFFSET,
+        )?,
+        surface_height_by_dispatch_kind: read_u16_table::<DOS_SHIP_SURFACE_HEIGHT_COUNT>(
+            data,
+            header_bytes,
+            exe_reader_base_file_offset,
+            RUNTIME_SURFACE_HEIGHT_OFFSET,
+        )?,
+        thrust_phase_by_cycle: read_u16_table::<DOS_SHIP_THRUST_PHASE_COUNT>(
+            data,
+            header_bytes,
+            exe_reader_base_file_offset,
+            RUNTIME_THRUST_PHASE_OFFSET,
+        )?,
+        shadow_masks: read_shadow_masks(data, exe_reader_base_file_offset)?,
+    };
+
     Ok(ExeRuntimeTables {
         tile_class_by_low3,
         draw_dispatch_by_type,
+        ship,
     })
 }
 
@@ -238,6 +283,50 @@ fn read_u16(data: &[u8], offset: usize) -> Result<u16> {
         return Err(Error::UnexpectedEof("u16"));
     }
     Ok(u16::from_le_bytes([data[offset], data[offset + 1]]))
+}
+
+fn read_u16_table<const N: usize>(
+    data: &[u8],
+    _header_bytes: usize,
+    exe_reader_base_file_offset: usize,
+    offset: u16,
+) -> Result<[u16; N]> {
+    let mut values = [0u16; N];
+    let base = exe_reader_base_file_offset + usize::from(offset);
+    for (index, value) in values.iter_mut().enumerate() {
+        *value = read_u16(data, base + index * 2)?;
+    }
+    Ok(values)
+}
+
+fn read_i16_table<const N: usize>(
+    data: &[u8],
+    header_bytes: usize,
+    exe_reader_base_file_offset: usize,
+    offset: u16,
+) -> Result<[i16; N]> {
+    let values = read_u16_table::<N>(data, header_bytes, exe_reader_base_file_offset, offset)?;
+    Ok(values.map(|value| i16::from_le_bytes(value.to_le_bytes())))
+}
+
+fn read_shadow_masks(
+    data: &[u8],
+    exe_reader_base_file_offset: usize,
+) -> Result<[[u8; DOS_SHIP_SHADOW_MASK_BYTES]; DOS_SHIP_SHADOW_MASK_COUNT]> {
+    let mut masks =
+        [[0u8; DOS_SHIP_SHADOW_MASK_BYTES]; DOS_SHIP_SHADOW_MASK_COUNT];
+    let base = exe_reader_base_file_offset + usize::from(RUNTIME_SHADOW_MASK_OFFSET);
+    for (mask_index, mask) in masks.iter_mut().enumerate() {
+        let start = base + mask_index * DOS_SHIP_SHADOW_MASK_BYTES;
+        let end = start + DOS_SHIP_SHADOW_MASK_BYTES;
+        if end > data.len() {
+            return Err(Error::invalid_format(
+                "ship shadow masks extend past SKYROADS.EXE",
+            ));
+        }
+        mask.copy_from_slice(&data[start..end]);
+    }
+    Ok(masks)
 }
 
 #[cfg(test)]
@@ -277,6 +366,31 @@ mod tests {
                 0x2E50, 0x303D, 0x2E9F, 0x2EE1, 0x2F3C, 0x2FB0, 0x3AAD, 0x3AAD, 0x3AAD, 0x3AAD,
                 0x3AAD, 0x3AAD, 0x3AAD, 0x3AAD, 0x3AAD, 0x3AAD,
             ]
+        );
+        assert_eq!(
+            exe.runtime_tables.ship.screen_x_bias_by_lane,
+            [-1, -1, -1, 0, 1, 2, 4]
+        );
+        assert_eq!(
+            exe.runtime_tables.ship.surface_height_by_dispatch_kind,
+            [0x2800, 0x3200, 0x3200, 0x3200, 0x3C00, 0x3C00]
+        );
+        assert_eq!(exe.runtime_tables.ship.thrust_phase_by_cycle, [0, 1, 2, 1]);
+        assert_eq!(
+            exe.runtime_tables.ship.shadow_masks[0]
+                .iter()
+                .copied()
+                .map(usize::from)
+                .sum::<usize>(),
+            156
+        );
+        assert_eq!(
+            exe.runtime_tables.ship.shadow_masks[4]
+                .iter()
+                .copied()
+                .map(usize::from)
+                .sum::<usize>(),
+            12
         );
     }
 }
