@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import threading
@@ -58,6 +60,16 @@ BIOS_KEYBOARD_HEAD_OFFSET = 0x001A
 BIOS_KEYBOARD_TAIL_OFFSET = 0x001C
 BIOS_KEYBOARD_BUFFER_OFFSET = 0x001E
 BIOS_KEYBOARD_BUFFER_CAPACITY = 16
+ROAD_WINDOW_BASE_OFFSET = 0x1638
+ROAD_WINDOW_ROW_STRIDE = 0x0E
+ROAD_WINDOW_ACTIVE_OFFSET = 0x62
+TREKDAT_POINTER_GRID_BYTES = 0x0270
+VGA_FRAME_DUMP_NAME = "vga_frame"
+VGA_FRAME_SEGMENT = "A000"
+VGA_FRAME_OFFSET = "0000"
+VGA_FRAME_BYTES = 320 * 200
+FIXTURE_BUNDLE_VERSION = 1
+DEFAULT_FIXTURE_ROOT = Path("fixtures/dos-gameplay-renderer")
 
 
 def running_in_wsl() -> bool:
@@ -139,6 +151,16 @@ class StageSpec:
 
 
 @dataclass(frozen=True)
+class CheckpointSpec:
+    name: str | None = None
+    resume_command: str = "f5"
+    repeat_count: int = 1
+    bios_keys: tuple[str, ...] = ()
+    capture_screen: bool = False
+    timeout_seconds: float | None = None
+
+
+@dataclass(frozen=True)
 class OraclePreset:
     name: str
     description: str
@@ -148,6 +170,7 @@ class OraclePreset:
     auto_keys: tuple[KeyEvent, ...] = ()
     warmup_vrt_count: int = 0
     stages: tuple[StageSpec, ...] = ()
+    checkpoints: tuple[CheckpointSpec, ...] = ()
 
 
 ROAD0_INITIAL_FRAME = OraclePreset(
@@ -195,6 +218,23 @@ PRESETS = {
         dumps=ROAD0_INITIAL_FRAME.dumps,
         bios_keys=("space", "space", "return", "return"),
         warmup_vrt_count=1,
+    ),
+    "road0-first-five-renderer-frames": OraclePreset(
+        name="road0-first-five-renderer-frames",
+        description=(
+            "Skip the intro, start Road 0, and capture the first five gameplay-side hits of "
+            "the main DOS road renderer at image offset 0x2D03."
+        ),
+        breakpoints=ROAD0_INITIAL_FRAME.breakpoints,
+        dumps=ROAD0_INITIAL_FRAME.dumps,
+        bios_keys=ROAD0_INITIAL_FRAME.bios_keys,
+        auto_keys=ROAD0_INITIAL_FRAME.auto_keys,
+        warmup_vrt_count=ROAD0_INITIAL_FRAME.warmup_vrt_count,
+        stages=ROAD0_INITIAL_FRAME.stages,
+        checkpoints=tuple(
+            CheckpointSpec(name=f"frame_{index:02d}", resume_command="f5")
+            for index in range(5)
+        ),
     ),
 }
 
@@ -424,6 +464,63 @@ def infer_breakpoint_name(registers: dict[str, int], breakpoints: list[Breakpoin
     return f"cs{registers['cs']:04x}_ip{registers['ip']:04x}"
 
 
+def sanitize_path_component(value: str) -> str:
+    sanitized = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip())
+    return sanitized.strip(".-") or "checkpoint"
+
+
+def derived_road_window_dump(renderer_state_dump: dict[str, Any]) -> DumpSpec | None:
+    road_row_group = renderer_state_dump.get("road_row_group")
+    if not isinstance(road_row_group, int):
+        return None
+    offset = ROAD_WINDOW_BASE_OFFSET + road_row_group * ROAD_WINDOW_ROW_STRIDE + ROAD_WINDOW_ACTIVE_OFFSET
+    return DumpSpec("active_road_window", "DS", f"{offset:04X}", ROAD_WINDOW_ROW_STRIDE)
+
+
+def derived_trekdat_pointer_grid_dump(
+    renderer_state_dump: dict[str, Any],
+    trekdat_segment_table_dump: dict[str, Any],
+) -> DumpSpec | None:
+    trekdat_slot = renderer_state_dump.get("trekdat_slot")
+    segments = trekdat_segment_table_dump.get("segments")
+    if not isinstance(trekdat_slot, int) or not isinstance(segments, list):
+        return None
+    if trekdat_slot < 0 or trekdat_slot >= len(segments):
+        return None
+    segment = segments[trekdat_slot]
+    if not isinstance(segment, int) or segment == 0:
+        return None
+    return DumpSpec(
+        "active_trekdat_pointer_grid",
+        f"{segment:04X}",
+        "0000",
+        TREKDAT_POINTER_GRID_BYTES,
+    )
+
+
+def build_derived_dump_specs(dump_results: list[dict[str, Any]]) -> list[DumpSpec]:
+    dumps_by_name = {dump["name"]: dump for dump in dump_results}
+    renderer_state_dump = dumps_by_name.get("renderer_state")
+    if not isinstance(renderer_state_dump, dict):
+        return []
+
+    derived_specs: list[DumpSpec] = []
+    road_window_dump = derived_road_window_dump(renderer_state_dump)
+    if road_window_dump is not None:
+        derived_specs.append(road_window_dump)
+
+    trekdat_segment_table_dump = dumps_by_name.get("trekdat_segment_table")
+    if isinstance(trekdat_segment_table_dump, dict):
+        trekdat_dump = derived_trekdat_pointer_grid_dump(
+            renderer_state_dump,
+            trekdat_segment_table_dump,
+        )
+        if trekdat_dump is not None:
+            derived_specs.append(trekdat_dump)
+
+    return derived_specs
+
+
 def interpret_dump(dump: DumpSpec, data: bytes) -> dict[str, Any]:
     result: dict[str, Any] = {
         "name": dump.name,
@@ -451,6 +548,24 @@ def interpret_dump(dump: DumpSpec, data: bytes) -> dict[str, Any]:
             int.from_bytes(data[index : index + 2], "little")
             for index in range(0, len(data), 2)
         ]
+    elif dump.name == "active_road_window":
+        result["byte_values"] = list(data)
+        result["word_values"] = [
+            int.from_bytes(data[index : index + 2], "little")
+            for index in range(0, len(data), 2)
+        ]
+    elif dump.name == "active_trekdat_pointer_grid":
+        words = [
+            int.from_bytes(data[index : index + 2], "little")
+            for index in range(0, len(data), 2)
+        ]
+        result["pointer_word_count"] = len(words)
+        result["nonzero_pointer_count"] = sum(1 for value in words if value != 0)
+        result["first_pointer_words"] = words[:16]
+    elif dump.name == VGA_FRAME_DUMP_NAME:
+        result["width"] = 320
+        result["height"] = 200
+        result["row_stride"] = 320
     return result
 
 
@@ -502,6 +617,8 @@ def build_markdown(summary: dict[str, Any]) -> str:
             f"`CS:IP={registers['cs']:04X}:{registers['ip']:04X}`, "
             f"`DS={registers['ds']:04X}`, `SS={registers['ss']:04X}`"
         )
+        if checkpoint.get("breakpoint_name") and checkpoint["breakpoint_name"] != checkpoint["checkpoint_name"]:
+            lines.append(f"  - breakpoint: `{checkpoint['breakpoint_name']}`")
         for dump in checkpoint["dumps"]:
             if dump["name"] == "renderer_state" and "current_row" in dump:
                 lines.append(
@@ -511,6 +628,24 @@ def build_markdown(summary: dict[str, Any]) -> str:
             elif dump["name"] == "trekdat_segment_table":
                 segments = ", ".join(f"{value:04X}" for value in dump["segments"])
                 lines.append(f"  - TREKDAT segments: `{segments}`")
+            elif dump["name"] == "active_road_window":
+                values = " ".join(f"{value:02X}" for value in dump["byte_values"])
+                lines.append(f"  - active road bytes: `{values}`")
+            elif dump["name"] == "active_trekdat_pointer_grid":
+                lines.append(
+                    f"  - active TREKDAT pointer words: `{dump['pointer_word_count']}` "
+                    f"({dump['nonzero_pointer_count']} non-zero)"
+                )
+            elif dump["name"] == VGA_FRAME_DUMP_NAME and "sha256" in dump:
+                lines.append(f"  - VGA frame SHA-256: `{dump['sha256']}`")
+    if summary.get("fixture_bundles"):
+        lines.extend(["", "## Fixture Bundles", ""])
+        for fixture in summary["fixture_bundles"]:
+            lines.append(
+                f"- `{fixture['checkpoint_name']}` -> `{fixture['fixture_path']}`"
+            )
+            if fixture.get("frame_sha256"):
+                lines.append(f"  - frame SHA-256: `{fixture['frame_sha256']}`")
     if summary.get("notes"):
         lines.extend(["", "## Notes", ""])
         for note in summary["notes"]:
@@ -632,6 +767,7 @@ def capture_dump_file(
     memdump_path.replace(target_path)
     raw = target_path.read_bytes()
     result = interpret_dump(dump, raw)
+    result["sha256"] = hashlib.sha256(raw).hexdigest()
     result["path"] = str(target_path)
     return result
 
@@ -730,6 +866,124 @@ def preload_bios_keyboard_buffer(session: DosboxDebuggerSession, key_names: tupl
     )
 
 
+def capture_checkpoint(
+    session: DosboxDebuggerSession,
+    output_root: Path,
+    checkpoint_name: str | None,
+    hit_index: int,
+    breakpoints: list[BreakpointSpec],
+    dumps: list[DumpSpec],
+    capture_screen_enabled: bool,
+    notes: list[str],
+) -> dict[str, Any]:
+    registers = capture_register_snapshot(session)
+    breakpoint_name = infer_breakpoint_name(registers, breakpoints)
+    resolved_name = sanitize_path_component(checkpoint_name or breakpoint_name)
+    checkpoint_dir = output_root / resolved_name
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    dump_results = [capture_dump_file(session, dump, checkpoint_dir) for dump in dumps]
+    derived_specs = build_derived_dump_specs(dump_results)
+    existing_names = {dump["name"] for dump in dump_results}
+    for derived_dump in derived_specs:
+        if derived_dump.name in existing_names:
+            continue
+        dump_results.append(capture_dump_file(session, derived_dump, checkpoint_dir))
+        existing_names.add(derived_dump.name)
+
+    screenshot_path = None
+    if capture_screen_enabled:
+        try:
+            screenshot_path = capture_screenshot(checkpoint_dir, resolved_name)
+        except Exception as exc:  # pragma: no cover - host integration
+            notes.append(f"Host screenshot capture failed for `{resolved_name}`: {exc}")
+
+    return {
+        "hit_index": hit_index,
+        "checkpoint_name": resolved_name,
+        "breakpoint_name": breakpoint_name,
+        "registers": registers,
+        "dumps": dump_results,
+        "screenshot": screenshot_path,
+    }
+
+
+def default_checkpoint_specs(resume_command: str) -> tuple[CheckpointSpec, ...]:
+    return (CheckpointSpec(name=None, resume_command=resume_command),)
+
+
+def fixture_bundle_from_checkpoint(
+    fixture_root: Path,
+    preset_name: str,
+    checkpoint: dict[str, Any],
+) -> dict[str, Any]:
+    checkpoint_name = sanitize_path_component(str(checkpoint["checkpoint_name"]))
+    fixture_dir = fixture_root / sanitize_path_component(preset_name) / checkpoint_name
+    fixture_dir.mkdir(parents=True, exist_ok=True)
+
+    frame_sha256 = None
+    dumps = []
+    for dump in checkpoint["dumps"]:
+        fixture_dump = {
+            "name": dump["name"],
+            "address": dump["address"],
+            "length": dump["length"],
+            "sha256": dump["sha256"],
+        }
+        if dump["name"] == VGA_FRAME_DUMP_NAME:
+            frame_sha256 = dump["sha256"]
+        for key in (
+            "current_row",
+            "road_row_group",
+            "trekdat_slot",
+            "raw_words",
+            "values",
+            "targets",
+            "segments",
+            "byte_values",
+            "word_values",
+            "pointer_word_count",
+            "nonzero_pointer_count",
+            "first_pointer_words",
+            "width",
+            "height",
+            "row_stride",
+        ):
+            if key in dump:
+                fixture_dump[key] = dump[key]
+        dumps.append(fixture_dump)
+
+    fixture = {
+        "bundle_version": FIXTURE_BUNDLE_VERSION,
+        "preset": preset_name,
+        "checkpoint_name": checkpoint_name,
+        "breakpoint_name": checkpoint["breakpoint_name"],
+        "hit_index": checkpoint["hit_index"],
+        "registers": checkpoint["registers"],
+        "frame_sha256": frame_sha256,
+        "dumps": dumps,
+    }
+    fixture_path = fixture_dir / "fixture.json"
+    fixture_path.write_text(json.dumps(fixture, indent=2, sort_keys=True) + "\n", encoding="ascii")
+    return {
+        "checkpoint_name": checkpoint_name,
+        "fixture_path": str(fixture_path),
+        "frame_sha256": frame_sha256,
+    }
+
+
+def write_fixture_bundles(
+    fixture_root: Path,
+    preset_name: str,
+    checkpoints: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    fixture_root.mkdir(parents=True, exist_ok=True)
+    return [
+        fixture_bundle_from_checkpoint(fixture_root, preset_name, checkpoint)
+        for checkpoint in checkpoints
+    ]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Capture DOSBox-X debugger checkpoints from the original SkyRoads executable."
@@ -796,6 +1050,14 @@ def main() -> int:
         help="Capture a host screenshot after each checkpoint prompt.",
     )
     parser.add_argument(
+        "--capture-vga-frame",
+        action="store_true",
+        help=(
+            "Dump A000:0000 (320x200 mode-13h VGA memory) at each checkpoint prompt. "
+            "Use this only when the chosen prompt is known to be post-render."
+        ),
+    )
+    parser.add_argument(
         "--no-bios-keys",
         action="store_true",
         help="Disable the preset's BIOS keyboard-buffer preload.",
@@ -816,6 +1078,23 @@ def main() -> int:
         action="store_true",
         help="Disable any preset-defined staged debugger/input sequence.",
     )
+    parser.add_argument(
+        "--write-fixtures",
+        action="store_true",
+        help=(
+            "Normalize captured checkpoints into fixture bundles under the repo fixture root "
+            "or the path provided by --fixture-root."
+        ),
+    )
+    parser.add_argument(
+        "--fixture-root",
+        type=Path,
+        default=None,
+        help=(
+            "Override the normalized fixture root. Defaults to "
+            f"{DEFAULT_FIXTURE_ROOT} under --source."
+        ),
+    )
     args = parser.parse_args()
 
     source_root = args.source.resolve()
@@ -834,6 +1113,8 @@ def main() -> int:
     extra_dumps = [parse_dump(value) for value in args.dump]
     unresolved_breakpoints = list(preset.breakpoints) + extra_breakpoints
     dumps = list(preset.dumps) + extra_dumps
+    if args.capture_vga_frame:
+        dumps.append(DumpSpec(VGA_FRAME_DUMP_NAME, VGA_FRAME_SEGMENT, VGA_FRAME_OFFSET, VGA_FRAME_BYTES))
     key_backend = detect_key_backend()
     screenshot_backend = detect_screenshot_backend()
 
@@ -854,6 +1135,7 @@ def main() -> int:
     startup_registers: dict[str, int] | None = None
     breakpoints: list[BreakpointSpec] = []
     breakpoints_resolved = False
+    fixture_bundles: list[dict[str, Any]] = []
 
     try:
         session.start()
@@ -965,37 +1247,66 @@ def main() -> int:
                 f"Completed stage `{stage.name}` via `{stage.resume_command}` x{stage.repeat_count}."
             )
 
-        if args.resume_command == "f5":
-            session.resume()
-        else:
-            session.send_line("VRT")
-        _, prompt_count = session.wait_for_prompt(prompt_count, args.checkpoint_timeout)
+        checkpoint_specs = preset.checkpoints or default_checkpoint_specs(args.resume_command)
+        for hit_index, checkpoint_spec in enumerate(checkpoint_specs, start=1):
+            if checkpoint_spec.bios_keys:
+                preload_bios_keyboard_buffer(session, checkpoint_spec.bios_keys)
+                notes.append(
+                    f"Preloaded the BIOS keyboard buffer for checkpoint "
+                    f"`{checkpoint_spec.name or hit_index}` with: "
+                    + ", ".join(checkpoint_spec.bios_keys)
+                )
+            timeout_seconds = checkpoint_spec.timeout_seconds or args.checkpoint_timeout
+            for _ in range(checkpoint_spec.repeat_count):
+                if checkpoint_spec.resume_command == "f5":
+                    session.resume()
+                else:
+                    session.send_line("VRT")
+                _, prompt_count = session.wait_for_prompt(prompt_count, timeout_seconds)
+                if not breakpoints_resolved:
+                    current_registers = capture_register_snapshot(session)
+                    if current_registers["cs"] != 0xF000:
+                        breakpoints = resolve_breakpoints_for_registers(unresolved_breakpoints, current_registers)
+                        for breakpoint in breakpoints:
+                            session.send_line(f"BP {breakpoint.address}")
+                        breakpoints_resolved = True
+                        notes.append(
+                            f"Resolved EXE-relative breakpoints against runtime CS `{current_registers['cs']:04X}` "
+                            f"during checkpoint `{checkpoint_spec.name or hit_index}`."
+                        )
+
+            checkpoints.append(
+                capture_checkpoint(
+                    session,
+                    output_root,
+                    checkpoint_spec.name,
+                    hit_index,
+                    breakpoints,
+                    dumps,
+                    args.capture_screen or checkpoint_spec.capture_screen,
+                    notes,
+                )
+            )
 
         if key_thread is not None:
             key_thread.stop()
             key_thread.join(timeout=1)
 
-        registers = capture_register_snapshot(session)
-        checkpoint_name = infer_breakpoint_name(registers, breakpoints)
-        checkpoint_dir = output_root / checkpoint_name
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        dump_results = [capture_dump_file(session, dump, checkpoint_dir) for dump in dumps]
-        screenshot_path = None
-        if args.capture_screen:
-            try:
-                screenshot_path = capture_screenshot(checkpoint_dir, checkpoint_name)
-            except Exception as exc:  # pragma: no cover - host integration
-                notes.append(f"Host screenshot capture failed: {exc}")
-
-        checkpoints.append(
-            {
-                "hit_index": 1,
-                "checkpoint_name": checkpoint_name,
-                "registers": registers,
-                "dumps": dump_results,
-                "screenshot": screenshot_path,
-            }
-        )
+        if args.write_fixtures or args.fixture_root is not None:
+            fixture_root = (
+                args.fixture_root.resolve()
+                if args.fixture_root is not None
+                else (source_root / DEFAULT_FIXTURE_ROOT).resolve()
+            )
+            fixture_bundles = write_fixture_bundles(fixture_root, preset.name, checkpoints)
+            notes.append(
+                f"Wrote {len(fixture_bundles)} normalized fixture bundle(s) under {fixture_root}."
+            )
+            if any(bundle.get("frame_sha256") is None for bundle in fixture_bundles):
+                notes.append(
+                    "One or more fixture bundles do not include a canonical frame hash because "
+                    "no `vga_frame` dump was captured at that checkpoint."
+                )
     except Exception as exc:
         run_error = exc
         notes.append(f"Capture run failed: {exc}")
@@ -1066,6 +1377,7 @@ def main() -> int:
             for item in dumps
         ],
         "checkpoints": checkpoints,
+        "fixture_bundles": fixture_bundles,
         "notes": notes,
         "failure_screenshot": failure_screenshot_path,
         "raw_log_path": str(session.raw_log_path),
