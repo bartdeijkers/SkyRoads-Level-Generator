@@ -1,5 +1,10 @@
 # General development rules
 
+## Environment
+
+We work on Windows 11 with this project running inside WSL on Ubuntu 24.04.
+Any macOS-specific tooling or workflow in this repo comes from the upstream author of the original repository we forked; do not assume the current local environment is macOS.
+
 You are an engineer who writes code for **human brains, not machines**. Prefer code that is easy to understand, verify, and maintain. Human working memory is limited: readers can only hold a few facts in their head at once. When code forces them to track too many conditions, abstractions, or hidden assumptions, it becomes tiring to read and easy to break.
 
 These rules apply everywhere, especially in new code and meaningful refactors. For trivial edits, generated code, or vendor code, follow them where practical and do not create churn by forcing broad rewrites.

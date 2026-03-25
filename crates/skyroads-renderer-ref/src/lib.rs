@@ -491,15 +491,10 @@ impl ReferenceRenderer {
         if let Some(world) = world {
             self.draw_archive_frame(frame, world, 0, 1.0, 1.0);
         }
-        let drew_dos_road = self.draw_demo_rows_before_ship(frame, scene);
-        if !drew_dos_road {
-            self.draw_demo_rows_fallback(frame, scene);
-        }
+        self.draw_demo_rows_before_ship(frame, scene);
         self.draw_ship_shadow(frame, &ship_visual, &ship_pipeline);
         self.draw_ship_sprite(frame, scene.frame_index, &ship_visual, &mut ship_pipeline);
-        if drew_dos_road {
-            self.draw_demo_rows_after_ship(frame, scene);
-        }
+        self.draw_demo_rows_after_ship(frame, scene);
         self.draw_archive_frame(frame, &self.assets.dashboard, 0, 1.0, 1.0);
         self.draw_gauge(
             &mut *frame,
@@ -545,11 +540,11 @@ impl ReferenceRenderer {
         &self,
         frame: &mut FrameBuffer320x200,
         scene: &DemoPlaybackState,
-    ) -> bool {
+    ) {
         let Some(record) = self.assets.trekdat.records.get(scene.current_row & 7) else {
-            return false;
+            return;
         };
-        draw_dos_trekdat_pass(frame, scene, record, DosRoadPhase::BeforeShip)
+        let _ = draw_dos_trekdat_pass(frame, scene, record, DosRoadPhase::BeforeShip);
     }
 
     fn draw_demo_rows_after_ship(&self, frame: &mut FrameBuffer320x200, scene: &DemoPlaybackState) {
@@ -570,13 +565,6 @@ impl ReferenceRenderer {
         let _ = draw_dos_trekdat_pass(&mut coverage, scene, record, DosRoadPhase::AfterShip);
         Some(coverage)
     }
-
-    fn draw_demo_rows_fallback(&self, frame: &mut FrameBuffer320x200, scene: &DemoPlaybackState) {
-        for slice in project_road_slices(scene) {
-            self.draw_projected_slice(frame, &slice);
-        }
-    }
-
     fn draw_ship_sprite(
         &self,
         frame: &mut FrameBuffer320x200,
@@ -3124,7 +3112,10 @@ mod tests {
             },
         ] {
             let scene = gameplay_scene_after_steps(input, 8);
-            assert!(scene.ship.is_on_ground, "expected early steering scene to stay grounded");
+            assert!(
+                scene.ship.is_on_ground,
+                "expected early steering scene to stay grounded"
+            );
             assert!(
                 scene.current_row <= 24,
                 "expected early steering scene to stay on the opening flat road, got row {}",
@@ -3150,10 +3141,9 @@ mod tests {
 
             let rendered_bounds =
                 frame_non_background_bounds(&frame, background).expect("expected ship pixels");
-            let raw_bounds = sprite_nontransparent_bounds(
-                &car_atlas.exact_ship_frames_raw[exact_frame_index],
-            )
-            .expect("expected raw ship pixels");
+            let raw_bounds =
+                sprite_nontransparent_bounds(&car_atlas.exact_ship_frames_raw[exact_frame_index])
+                    .expect("expected raw ship pixels");
 
             assert_eq!(
                 rendered_bounds.0 as i32 - placement.sprite_left,
