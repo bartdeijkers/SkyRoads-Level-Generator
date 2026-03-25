@@ -115,6 +115,10 @@ cargo test
 cargo test --workspace
 cargo run -p skyroads-cli -- summary .
 cargo run -p skyroads-cli -- demo-sim . 120
+cargo run -p skyroads-cli -- render-capture . /tmp/skyroads-render-capture
+cargo run -p skyroads-cli -- render-capture . /tmp/skyroads-render-capture --x265-video /tmp/skyroads-render-capture.mp4
+cargo run -p skyroads-cli -- render-demo . /tmp/skyroads-render-demo --x265-video /tmp/skyroads-render-demo.mp4
+cargo run -p skyroads-cli -- render-compare /tmp/skyroads-render-capture /tmp/skyroads-render-capture
 cargo run -p skyroads-sdl -- .
 cargo run -p skyroads-sdl -- --fullscreen .
 cargo run -p skyroads-sdl -- --borderless .
@@ -125,7 +129,12 @@ Notes:
 
 - `cargo test` runs the portable workspace crates by default and does not require SDL2
 - `cargo test --workspace` and `cargo run -p skyroads-sdl -- .` require native SDL2 development files
+- `cargo run -p skyroads-cli -- render-capture . DIR` writes a deterministic ship-focused gameplay frame suite as `.ppm` files plus `manifest.tsv`
+- `cargo run -p skyroads-cli -- render-capture . DIR --x265-video VIDEO.mp4` also streams the captured `.ppm` frames into `ffmpeg` and writes a single H.265/HEVC video with `libx265`; add `--video-fps FPS` to override the default `30`
+- `cargo run -p skyroads-cli -- render-demo . DIR --x265-video VIDEO.mp4` renders the actual attract-mode gameplay demo as `.ppm` frames plus `manifest.tsv`, and can encode the same frame sequence to x265/HEVC in one run
+- `cargo run -p skyroads-cli -- render-compare BEFORE AFTER` compares two capture manifests by labeled frame hash
 - if SDL2 lives outside standard search paths, set `SDL2_CONFIG` or `SDL2_LIBS` before building `skyroads-sdl`
+- the optional x265 export path expects `ffmpeg` with `libx265` support on your `PATH`
 - `--fullscreen` uses desktop fullscreen with the `1280x960` presentation letterboxed to the largest 4:3 area
 - `--borderless` uses a centered borderless `1280x960` window
 

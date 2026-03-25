@@ -5,11 +5,20 @@
 - Define success as oracle-backed equivalence, not “looks close”: representative gameplay checkpoints must match DOS frame output and placement behavior.
 - Keep scope limited to gameplay/demo presentation. Do not widen this plan into physics, audio, or menu work except where they are needed to drive deterministic renderer captures.
 
+## Current Findings
+- A native bug clipped ship pixels to the visible road span. That was not DOS-faithful: the DOS build gates ship writes through a dedicated `29 x 33` ship mask buffer at `SS:0x0E92`, built by the ship path around `0x32A5`, not from a road-coverage clip window. The current local mitigation is to keep ship pixels unmasked until that DOS mask path is ported exactly.
+- A second native bug mis-indexed the exact `63`-frame ship run extracted from `CARS.LZS`. The full-width split contains four extra fragments before the real ship frames, so the native atlas must start at the first full ship frame, not merely at the first split after the explosion strip. This removed the false mini/explosion-like frame visible in `render-demo` around `24s..27s`.
+- These local fixes reduced obvious visual regressions, but they are not sign-off. Ship masking, sprite ordering, and placement still need oracle-backed DOS equivalence before this plan can be considered complete.
+
 ## Implementation Changes
 - Expand the DOS oracle flow in `tools/skyroads_dos_oracle.py` from a single `renderer_entry` hit into a named gameplay-render capture sequence:
   - Add a preset that reaches gameplay and captures checkpoints for first frame, steady neutral, steady left, steady right, sustained throttle, first airborne/jump, fresh death, and delayed game-over.
   - For each checkpoint, dump renderer state, the active road-byte window used by the `0x1638 + row_group * 0x0E + 0x62` path, the active TREKDAT slot/segment data, the runtime words that feed ship/view placement, and the post-render VGA frame data.
   - Normalize each capture into a committed fixture bundle under a single repo fixture location, with machine-readable metadata plus a canonical frame hash; keep raw oracle artifacts local-only.
+- Add a native before/after capture workflow in `crates/skyroads-cli`:
+  - Add `render-capture` to render a deterministic gameplay ship suite into portable frame dumps plus a manifest of hashes and ship/row metadata.
+  - Add `render-compare` to diff two native capture manifests by labeled frame so renderer edits can be checked locally before promoting changes to oracle-backed fixtures.
+  - Treat this native capture path as a local regression aid, not as the final source of truth; it should speed up iteration without weakening the DOS-equivalence bar.
 - Finish the DOS road/span renderer in `crates/skyroads-renderer-ref/src/lib.rs`:
   - Treat `draw_dos_trekdat_pass()` as the only gameplay road path.
   - Remove `draw_demo_rows_fallback()` and `project_road_slices()` from the normal gameplay render path; keep them only behind debug-only code if they remain useful for development.
@@ -18,6 +27,8 @@
 - Replace fallback view placement with DOS-derived placement:
   - Remove the fallback implementation in `ship_screen_placement_from_slices()`.
   - Recover and port the exact inputs and formulas/tables for camera centering, road centering, ship sprite X/Y, shadow X/Y, grounded vs airborne offsets, and before-ship/after-ship draw ordering.
+  - Port the DOS ship-mask builder around `0x32A5` and retire the current temporary “all ship pixels visible” behavior; do not reintroduce a road-span-derived sprite clip heuristic.
+  - Validate `CARS.LZS` exact-ship frame extraction against DOS frame selection, including the explosion-strip boundary and the start of the `63`-frame ship run, before trusting native frame indices.
   - If placement depends on additional DOS runtime words not currently dumped, add those addresses to the oracle capture first, then port the formula from those values; do not hardcode another “stable fallback.”
 - Introduce one internal render-context model for gameplay equivalence:
   - Add a dedicated internal context/fixture type that contains only DOS-relevant render inputs for one checkpoint: row state, road bytes, active TREKDAT slot, ship simulation state, and captured placement-driving words.
@@ -28,14 +39,22 @@
   - Remove tests that assert fallback anchor behavior.
   - Add fixture tests that render native frames for the named checkpoints and compare them against committed DOS oracle hashes.
   - Add focused structural tests for row-group/slot selection, pointer-row dispatch order, and draw-type `0..5` behavior so failures localize before full-frame diffs.
+  - Keep native regression tests for the two concrete failures already found locally: early Road 0 steering must not clip the ship to the flat road span, and the demo segment around `24s..27s` must keep visible airborne left-edge ship pixels with no false mini/explosion-like frame.
+- Keep a native capture smoke path available while the oracle fixture set grows:
+  - `render-capture` must emit the same labeled frame set on repeat runs with identical inputs.
+  - `render-compare` must report changed, added, and removed labels so before/after renderer runs are inspectable without manual screenshot bookkeeping.
+  - `render-demo` remains a useful local probe for long-form airborne and edge-of-screen ship issues, but it does not replace oracle-backed acceptance.
 - Acceptance criteria:
   - The normal gameplay renderer never calls the fallback road projection path.
   - The normal gameplay renderer never returns a fallback ship/shadow placement.
+  - The normal gameplay renderer never derives ship sprite clipping directly from projected/native road spans.
   - Whole-frame equivalence passes for the named Road 0 checkpoints.
   - At least one checkpoint per draw dispatch kind `0..5` also passes, proving the renderer is not only correct for the opening road.
+  - The native capture workflow is good enough to baseline renderer edits locally, but final sign-off still comes from oracle-backed equivalence.
   - Existing smoke coverage stays green so the exact renderer still works in the SDL host.
 
 ## Assumptions and Defaults
 - Use DOSBox-X oracle captures as the source of truth. Host screenshots may remain as debugging aids, but automated acceptance should use normalized DOS capture data, not manual visual comparison.
+- Use the native CLI capture manifests as an iteration tool between edits, not as a replacement for DOS fixtures.
 - Road 0 is the initial calibration sequence, but the plan is not complete until all shipped live draw kinds `0..5` are covered by fixtures.
 - Scope ends at gameplay/demo renderer equivalence. Audio, physics, and non-gameplay menus are unchanged unless they are required to produce deterministic capture entry into gameplay.

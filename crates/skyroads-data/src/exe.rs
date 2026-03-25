@@ -313,8 +313,7 @@ fn read_shadow_masks(
     data: &[u8],
     exe_reader_base_file_offset: usize,
 ) -> Result<[[u8; DOS_SHIP_SHADOW_MASK_BYTES]; DOS_SHIP_SHADOW_MASK_COUNT]> {
-    let mut masks =
-        [[0u8; DOS_SHIP_SHADOW_MASK_BYTES]; DOS_SHIP_SHADOW_MASK_COUNT];
+    let mut masks = [[0u8; DOS_SHIP_SHADOW_MASK_BYTES]; DOS_SHIP_SHADOW_MASK_COUNT];
     let base = exe_reader_base_file_offset + usize::from(RUNTIME_SHADOW_MASK_OFFSET);
     for (mask_index, mask) in masks.iter_mut().enumerate() {
         let start = base + mask_index * DOS_SHIP_SHADOW_MASK_BYTES;

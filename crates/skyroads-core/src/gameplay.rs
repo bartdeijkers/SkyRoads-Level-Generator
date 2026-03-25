@@ -693,14 +693,12 @@ impl GameplaySession {
     pub fn run_frame(&mut self, controls: ControllerState) -> GameplayFrameResult {
         self.last_controls = controls;
         let previous_state = self.ship.state;
-        let events = self
-            .ship
-            .update(
-                &self.level,
-                &mut self.expected_ship,
-                controls,
-                self.explosion_timer != 0,
-            );
+        let events = self.ship.update(
+            &self.level,
+            &mut self.expected_ship,
+            controls,
+            self.explosion_timer != 0,
+        );
         let started_explosion =
             previous_state != ShipState::Exploded && self.ship.state == ShipState::Exploded;
         if started_explosion && self.explosion_timer == 0 {
@@ -759,7 +757,11 @@ pub fn sample_demo_input_for_ship<'a>(
         .get((ship.z_position * (0x10000 as f64 / 0x0666 as f64)).floor() as usize)
 }
 
-pub fn controller_state_from_dos_mouse(mouse_x: u16, mouse_y: u16, buttons: u16) -> ControllerState {
+pub fn controller_state_from_dos_mouse(
+    mouse_x: u16,
+    mouse_y: u16,
+    buttons: u16,
+) -> ControllerState {
     // DOS mode-2 mouse input uses absolute 320x200 coordinates with dead zones around the
     // centered ship. X is re-centered after each read, while Y remains absolute for throttle.
     let turn_input = i8::from(mouse_x > 0x00AA) - i8::from(mouse_x < 0x0096);
@@ -767,7 +769,11 @@ pub fn controller_state_from_dos_mouse(mouse_x: u16, mouse_y: u16, buttons: u16)
     ControllerState::new(turn_input, accel_input, buttons != 0)
 }
 
-pub fn controller_state_from_dos_joystick(raw_x: u16, raw_y: u16, jump_pressed: bool) -> ControllerState {
+pub fn controller_state_from_dos_joystick(
+    raw_x: u16,
+    raw_y: u16,
+    jump_pressed: bool,
+) -> ControllerState {
     // DOS mode-1 joystick input compares each calibrated axis against half-center and
     // three-halves-center thresholds. SDL-style signed axes can be remapped into this raw
     // 0..65535 space by adding 32768 before calling this helper.
@@ -817,8 +823,8 @@ mod tests {
 
     use super::{
         controller_state_from_demo_input, controller_state_from_dos_joystick,
-        controller_state_from_dos_mouse,
-        sample_demo_input_for_ship, ControllerState, GameplaySession, ShipState,
+        controller_state_from_dos_mouse, sample_demo_input_for_ship, ControllerState,
+        GameplaySession, ShipState,
     };
 
     fn repo_root() -> PathBuf {

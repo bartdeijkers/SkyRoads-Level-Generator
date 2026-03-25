@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 skyroads-data = { path = "../skyroads-data" }
 skyroads-core = { path = "../skyroads-core" }
+skyroads-renderer-ref = { path = "../skyroads-renderer-ref" }

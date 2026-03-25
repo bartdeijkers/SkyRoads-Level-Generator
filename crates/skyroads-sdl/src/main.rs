@@ -313,8 +313,12 @@ fn run() -> Result<()> {
                 ControlMode::Keyboard => {}
                 ControlMode::Mouse => {
                     let mouse = sdl.mouse_state();
-                    input.app.gameplay_controls_override =
-                        Some(dos_mouse_controls(mouse.x, mouse.y, mouse.buttons, display_rect));
+                    input.app.gameplay_controls_override = Some(dos_mouse_controls(
+                        mouse.x,
+                        mouse.y,
+                        mouse.buttons,
+                        display_rect,
+                    ));
                     recenter_dos_mouse_x(&window, mouse.y, display_rect);
                 }
                 ControlMode::Joystick => {
@@ -341,9 +345,7 @@ fn run() -> Result<()> {
             if tick.mode != current_mode {
                 current_mode = tick.mode;
                 window.set_title(&window_title(current_mode, debug_view))?;
-                if app.control_mode() == ControlMode::Mouse
-                    && current_mode == AppMode::Gameplay
-                {
+                if app.control_mode() == ControlMode::Mouse && current_mode == AppMode::Gameplay {
                     center_dos_mouse_for_gameplay(&window, display_rect);
                 }
             }
@@ -608,14 +610,13 @@ fn fit_rect_with_aspect(
 
     let width_from_height =
         i64::from(window_height) * i64::from(content_width) / i64::from(content_height);
-    let (display_width, display_height) =
-        if width_from_height <= i64::from(window_width) {
-            (width_from_height as i32, window_height)
-        } else {
-            let height_from_width =
-                i64::from(window_width) * i64::from(content_height) / i64::from(content_width);
-            (window_width, height_from_width as i32)
-        };
+    let (display_width, display_height) = if width_from_height <= i64::from(window_width) {
+        (width_from_height as i32, window_height)
+    } else {
+        let height_from_width =
+            i64::from(window_width) * i64::from(content_height) / i64::from(content_width);
+        (window_width, height_from_width as i32)
+    };
 
     Rect {
         x: (window_width - display_width) / 2,
@@ -638,9 +639,13 @@ fn held_only_input(input: AppInput) -> AppInput {
     }
 }
 
-fn dos_mouse_controls(mouse_x: i32, mouse_y: i32, buttons: u32, display_rect: Rect) -> ControllerState {
-    let (framebuffer_x, framebuffer_y) =
-        framebuffer_mouse_position(mouse_x, mouse_y, display_rect);
+fn dos_mouse_controls(
+    mouse_x: i32,
+    mouse_y: i32,
+    buttons: u32,
+    display_rect: Rect,
+) -> ControllerState {
+    let (framebuffer_x, framebuffer_y) = framebuffer_mouse_position(mouse_x, mouse_y, display_rect);
     controller_state_from_dos_mouse(framebuffer_x, framebuffer_y, buttons as u16)
 }
 
@@ -659,7 +664,10 @@ fn framebuffer_mouse_position(mouse_x: i32, mouse_y: i32, display_rect: Rect) ->
 }
 
 fn recenter_dos_mouse_x(window: &Window, mouse_y: i32, display_rect: Rect) {
-    let clamped_y = mouse_y.clamp(display_rect.y, display_rect.y + display_rect.h.saturating_sub(1));
+    let clamped_y = mouse_y.clamp(
+        display_rect.y,
+        display_rect.y + display_rect.h.saturating_sub(1),
+    );
     let center_x = display_rect.x + display_rect.w / 2;
     window.warp_mouse(center_x, clamped_y);
 }

@@ -197,7 +197,12 @@ impl SettingsMenuCursor {
         Self::row_items(target_row as usize)
             .iter()
             .copied()
-            .min_by_key(|candidate| ((candidate.x_center() - self.x_center()).abs(), candidate.x_center()))
+            .min_by_key(|candidate| {
+                (
+                    (candidate.x_center() - self.x_center()).abs(),
+                    candidate.x_center(),
+                )
+            })
             .unwrap_or(self)
     }
 }
@@ -528,7 +533,9 @@ impl AttractModeApp {
                 .move_in_direction(SettingsNavDirection::Right);
         }
         if input.up {
-            self.settings_cursor = self.settings_cursor.move_in_direction(SettingsNavDirection::Up);
+            self.settings_cursor = self
+                .settings_cursor
+                .move_in_direction(SettingsNavDirection::Up);
         }
         if input.down {
             self.settings_cursor = self
@@ -846,8 +853,8 @@ mod tests {
     use skyroads_data::{level_from_road_entry, load_demo_rec_path, load_roads_lzs_path};
 
     use super::{
-        AppInput, AppMode, AttractModeApp, AudioCommand, ControlMode, DisplaySettings,
-        MenuCursor, RenderScene, SettingsMenuCursor, GAMEPLAY_SONG_INDEX, RENDER_ROWS_BEHIND,
+        AppInput, AppMode, AttractModeApp, AudioCommand, ControlMode, DisplaySettings, MenuCursor,
+        RenderScene, SettingsMenuCursor, GAMEPLAY_SONG_INDEX, RENDER_ROWS_BEHIND,
     };
 
     fn repo_root() -> PathBuf {
@@ -1151,7 +1158,10 @@ mod tests {
             enter: true,
             ..AppInput::default()
         });
-        assert_eq!(sound_toggle.audio_commands, vec![AudioCommand::StopAllSamples]);
+        assert_eq!(
+            sound_toggle.audio_commands,
+            vec![AudioCommand::StopAllSamples]
+        );
         match sound_toggle.render_scene {
             RenderScene::SettingsMenu(scene) => {
                 assert_eq!(scene.cursor, SettingsMenuCursor::SoundFx);

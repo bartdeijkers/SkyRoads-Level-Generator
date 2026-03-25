@@ -7,10 +7,10 @@ use skyroads_core::{
 use skyroads_data::{
     load_dashboard_dat_path, load_image_archive_path, load_skyroads_exe_path,
     load_trekdat_lzs_path, ExeShipRuntimeTables, HudFragmentPack, ImageArchive, ImageFrame,
-    LevelCell, Result, RgbColor, TouchEffect, TrekdatArchive, TrekdatCellPointers,
-    TrekdatRecord, TrekdatShape, DASHBOARD_COLORS, DOS_SHIP_LANE_COUNT,
-    DOS_SHIP_SHADOW_MASK_HEIGHT, DOS_SHIP_SHADOW_MASK_WIDTH, GROUND_Y, LEVEL_CENTER_X,
-    LEVEL_MAX_X, LEVEL_MIN_X, LEVEL_TILE_STRIDE_X, ROAD_COLUMNS, SCREEN_HEIGHT, SCREEN_WIDTH,
+    LevelCell, Result, RgbColor, TouchEffect, TrekdatArchive, TrekdatCellPointers, TrekdatRecord,
+    TrekdatShape, DASHBOARD_COLORS, DOS_SHIP_LANE_COUNT, DOS_SHIP_SHADOW_MASK_HEIGHT,
+    DOS_SHIP_SHADOW_MASK_WIDTH, GROUND_Y, LEVEL_CENTER_X, LEVEL_MAX_X, LEVEL_MIN_X,
+    LEVEL_TILE_STRIDE_X, ROAD_COLUMNS, SCREEN_HEIGHT, SCREEN_WIDTH,
 };
 
 const FRAMEBUFFER_WIDTH: usize = SCREEN_WIDTH as usize;
@@ -26,13 +26,13 @@ const DOS_SHIP_CLIP_MASK_HEIGHT: usize = 33;
 const DOS_SHIP_CLIP_MASK_BYTES: usize = DOS_SHIP_SPRITE_WIDTH * DOS_SHIP_CLIP_MASK_HEIGHT;
 const DOS_SHIP_MASK_ROW_STRIDE: usize = DOS_SHIP_SPRITE_WIDTH;
 const DOS_SHIP_SHADOW_VARIANTS: usize = 5;
+const DOS_EXACT_SHIP_FRAME_START: usize = 18;
+const DOS_EXACT_SHIP_FRAME_COUNT: usize = 63;
 const DOS_SHIP_X_BASE_OFFSET: i32 = 0x6E;
 const DOS_SHIP_CENTER_X_OFFSET: i32 = 96;
 const DOS_SHIP_TOP_BASE: i32 = 0x9D;
 const DOS_SHIP_CENTER_Y_OFFSET: i32 = 12;
 const DOS_SHIP_SHADOW_TOP_OFFSET: i32 = 16;
-const DOS_SHIP_SHADOW_MID_MASK_ROW: usize = 16;
-const DOS_SHIP_SHADOW_BOTTOM_MASK_ROW: usize = 24;
 const DEBUG_PANEL_X: i32 = 8;
 const DEBUG_PANEL_Y: i32 = 8;
 const DEBUG_PANEL_W: i32 = 124;
@@ -173,6 +173,7 @@ struct ShipScreenPlacement {
 struct DosShipPipeline {
     placement: ShipScreenPlacement,
     clip_mask: [u8; DOS_SHIP_CLIP_MASK_BYTES],
+    shadow_surface_mask: [u8; DOS_SHIP_SHADOW_MASK_HEIGHT * DOS_SHIP_SHADOW_MASK_WIDTH],
     shadow_variant: Option<usize>,
 }
 
@@ -263,10 +264,8 @@ impl FrameBuffer320x200 {
         let factor = factor.clamp(0.0, 1.0);
         let offset = (y * FRAMEBUFFER_WIDTH + x) * 4;
         self.pixels_rgba[offset] = (self.pixels_rgba[offset] as f32 * factor).round() as u8;
-        self.pixels_rgba[offset + 1] =
-            (self.pixels_rgba[offset + 1] as f32 * factor).round() as u8;
-        self.pixels_rgba[offset + 2] =
-            (self.pixels_rgba[offset + 2] as f32 * factor).round() as u8;
+        self.pixels_rgba[offset + 1] = (self.pixels_rgba[offset + 1] as f32 * factor).round() as u8;
+        self.pixels_rgba[offset + 2] = (self.pixels_rgba[offset + 2] as f32 * factor).round() as u8;
         self.pixels_rgba[offset + 3] = 255;
     }
 }
@@ -475,10 +474,14 @@ impl ReferenceRenderer {
     }
 
     fn render_play_scene(&self, frame: &mut FrameBuffer320x200, scene: &DemoPlaybackState) {
-        let slices = project_road_slices(scene);
         let ship_visual = derive_ship_visual_state(scene, &self.assets.dos_ship_tables);
-        let mut ship_pipeline =
-            build_dos_ship_pipeline(scene, &self.assets.dos_ship_tables, &slices, &ship_visual);
+        let road_coverage = self.build_dos_road_coverage_frame(scene);
+        let mut ship_pipeline = build_dos_ship_pipeline(
+            scene,
+            &self.assets.dos_ship_tables,
+            road_coverage.as_ref(),
+            &ship_visual,
+        );
         frame.clear(RgbColor::new(0, 0, 0));
         let world = self
             .assets
@@ -492,8 +495,8 @@ impl ReferenceRenderer {
         if !drew_dos_road {
             self.draw_demo_rows_fallback(frame, scene);
         }
-        self.draw_ship_sprite(frame, scene.frame_index, &ship_visual, &mut ship_pipeline);
         self.draw_ship_shadow(frame, &ship_visual, &ship_pipeline);
+        self.draw_ship_sprite(frame, scene.frame_index, &ship_visual, &mut ship_pipeline);
         if drew_dos_road {
             self.draw_demo_rows_after_ship(frame, scene);
         }
@@ -554,6 +557,18 @@ impl ReferenceRenderer {
             return;
         };
         let _ = draw_dos_trekdat_pass(frame, scene, record, DosRoadPhase::AfterShip);
+    }
+
+    fn build_dos_road_coverage_frame(
+        &self,
+        scene: &DemoPlaybackState,
+    ) -> Option<FrameBuffer320x200> {
+        let record = self.assets.trekdat.records.get(scene.current_row & 7)?;
+        let mut coverage = FrameBuffer320x200::new();
+        coverage.clear(RgbColor::new(0, 0, 0));
+        let _ = draw_dos_trekdat_pass(&mut coverage, scene, record, DosRoadPhase::BeforeShip);
+        let _ = draw_dos_trekdat_pass(&mut coverage, scene, record, DosRoadPhase::AfterShip);
+        Some(coverage)
     }
 
     fn draw_demo_rows_fallback(&self, frame: &mut FrameBuffer320x200, scene: &DemoPlaybackState) {
@@ -833,7 +848,7 @@ impl ReferenceRenderer {
         visual: &DerivedShipVisualState,
         pipeline: &DosShipPipeline,
     ) {
-        if !visual.on_surface || visual.sprite_kind != ShipSpriteKind::Alive {
+        if visual.sprite_kind != ShipSpriteKind::Alive {
             return;
         }
 
@@ -847,17 +862,7 @@ impl ReferenceRenderer {
                 if shadow_mask[shadow_index] == 0 {
                     continue;
                 }
-
-                let bottom_mask_index = (DOS_SHIP_SHADOW_BOTTOM_MASK_ROW + local_y)
-                    * DOS_SHIP_MASK_ROW_STRIDE
-                    + local_x;
-                if pipeline.clip_mask[bottom_mask_index] == 0 {
-                    continue;
-                }
-
-                let ship_mask_index =
-                    (DOS_SHIP_SHADOW_MID_MASK_ROW + local_y) * DOS_SHIP_MASK_ROW_STRIDE + local_x;
-                if pipeline.clip_mask[ship_mask_index] == 2 {
+                if pipeline.shadow_surface_mask[shadow_index] == 0 {
                     continue;
                 }
 
@@ -1042,19 +1047,32 @@ impl ReferenceRenderer {
     fn draw_debug_overlay(&self, frame: &mut FrameBuffer320x200, scene: &DemoPlaybackState) {
         let visual = derive_ship_visual_state(scene, &self.assets.dos_ship_tables);
         let slices = project_road_slices(scene);
-        let placement =
-            ship_screen_placement_from_slices(scene, &visual, &self.assets.dos_ship_tables, &slices);
+        let placement = ship_screen_placement_from_slices(
+            scene,
+            &visual,
+            &self.assets.dos_ship_tables,
+            &slices,
+        );
         self.draw_debug_hud_panel(frame, scene, DebugViewMode::Overlay);
         self.draw_projected_slice_guides(frame, &slices);
         self.draw_ship_debug_guides(frame, scene, &visual, placement);
         self.draw_topdown_inset(frame, scene);
     }
 
-    fn render_play_geometry_debug(&self, frame: &mut FrameBuffer320x200, scene: &DemoPlaybackState) {
+    fn render_play_geometry_debug(
+        &self,
+        frame: &mut FrameBuffer320x200,
+        scene: &DemoPlaybackState,
+    ) {
         let visual = derive_ship_visual_state(scene, &self.assets.dos_ship_tables);
         let slices = project_road_slices(scene);
-        let mut pipeline =
-            build_dos_ship_pipeline(scene, &self.assets.dos_ship_tables, &slices, &visual);
+        let road_coverage = self.build_dos_road_coverage_frame(scene);
+        let mut pipeline = build_dos_ship_pipeline(
+            scene,
+            &self.assets.dos_ship_tables,
+            road_coverage.as_ref(),
+            &visual,
+        );
         let placement = pipeline.placement;
         frame.clear(RgbColor::new(8, 8, 14));
         if let Some(world) = self
@@ -1076,8 +1094,8 @@ impl ReferenceRenderer {
             self.draw_projected_slice(frame, slice);
         }
         self.draw_projected_slice_guides(frame, &slices);
-        self.draw_ship_sprite(frame, scene.frame_index, &visual, &mut pipeline);
         self.draw_ship_shadow(frame, &visual, &pipeline);
+        self.draw_ship_sprite(frame, scene.frame_index, &visual, &mut pipeline);
         self.draw_ship_debug_guides(frame, scene, &visual, placement);
         self.draw_topdown_inset(frame, scene);
         self.draw_archive_frame(frame, &self.assets.dashboard, 0, 1.0, 1.0);
@@ -1145,7 +1163,10 @@ impl ReferenceRenderer {
             RgbColor::new(190, 220, 255),
             1,
         );
-        let slot_text = format!("GRP {:02} SLT {}", row_state.road_row_group, row_state.trekdat_slot);
+        let slot_text = format!(
+            "GRP {:02} SLT {}",
+            row_state.road_row_group, row_state.trekdat_slot
+        );
         self.draw_text(
             frame,
             DEBUG_PANEL_X + 4,
@@ -1175,8 +1196,20 @@ impl ReferenceRenderer {
             let right_top = (slice.center_top + slice.width_top / 2.0).round() as i32;
             let left_bottom = (slice.center_bottom - slice.width_bottom / 2.0).round() as i32;
             let right_bottom = (slice.center_bottom + slice.width_bottom / 2.0).round() as i32;
-            frame.fill_rect(left_top, slice.top_y as i32, 1, 1, RgbColor::new(110, 255, 170));
-            frame.fill_rect(right_top, slice.top_y as i32, 1, 1, RgbColor::new(110, 255, 170));
+            frame.fill_rect(
+                left_top,
+                slice.top_y as i32,
+                1,
+                1,
+                RgbColor::new(110, 255, 170),
+            );
+            frame.fill_rect(
+                right_top,
+                slice.top_y as i32,
+                1,
+                1,
+                RgbColor::new(110, 255, 170),
+            );
             frame.fill_rect(
                 left_bottom,
                 slice.bottom_y.saturating_sub(1) as i32,
@@ -1361,13 +1394,21 @@ impl ReferenceRenderer {
         let row_start = scene.rows.first().map(|row| row.row_index).unwrap_or(0) as f64;
         let row_span = scene.rows.len().max(1) as f64;
         let ship_row = ((scene.ship.z_position - row_start) / row_span).clamp(0.0, 0.999);
-        let ship_col = ((scene.ship.x_position - left_edge) / (LEVEL_TILE_STRIDE_X * ROAD_COLUMNS as f64))
+        let ship_col = ((scene.ship.x_position - left_edge)
+            / (LEVEL_TILE_STRIDE_X * ROAD_COLUMNS as f64))
             .clamp(0.0, 0.999);
         let ship_x = x + 4 + (ship_col * f64::from((w - 8).max(1))) as i32;
         let ship_y = y + 4 + (ship_row * f64::from((h - 8).max(1))) as i32;
         frame.fill_rect(ship_x - 2, ship_y - 2, 5, 5, RgbColor::new(112, 214, 255));
         if large {
-            self.draw_text(frame, x + 4, y - 10, "TOPDOWN", RgbColor::new(244, 233, 146), 1);
+            self.draw_text(
+                frame,
+                x + 4,
+                y - 10,
+                "TOPDOWN",
+                RgbColor::new(244, 233, 146),
+                1,
+            );
         }
     }
 }
@@ -1900,9 +1941,7 @@ fn derive_ship_visual_state(
         skyroads_core::ShipState::Exploded => ShipSpriteKind::Exploding,
         skyroads_core::ShipState::Fallen
         | skyroads_core::ShipState::OutOfFuel
-        | skyroads_core::ShipState::OutOfOxygen => {
-            ShipSpriteKind::Destroyed
-        }
+        | skyroads_core::ShipState::OutOfOxygen => ShipSpriteKind::Destroyed,
     };
     let jumping = scene.ship.y_position > GROUND_Y + 0.5
         || scene.ship.is_going_up
@@ -1968,7 +2007,8 @@ fn ship_screen_placement_from_slices(
     ship_tables: &ExeShipRuntimeTables,
     slices: &[ProjectedRoadSlice],
 ) -> ShipScreenPlacement {
-    build_dos_ship_pipeline(scene, ship_tables, slices, visual).placement
+    let _ = slices;
+    build_dos_ship_pipeline(scene, ship_tables, None, visual).placement
 }
 
 fn settings_menu_selected_control_overlay(control_mode: ControlMode) -> usize {
@@ -1984,7 +2024,9 @@ fn dos_fixed(value: f64) -> i32 {
 }
 
 fn dos_ship_lane_index_from_fixed(x_fixed: i32) -> i32 {
-    ((x_fixed >> 7) - 95).div_euclid(46).clamp(0, DOS_SHIP_LANE_COUNT as i32 - 1)
+    ((x_fixed >> 7) - 95)
+        .div_euclid(46)
+        .clamp(0, DOS_SHIP_LANE_COUNT as i32 - 1)
 }
 
 fn dos_ship_raw_screen_x(x_fixed: i32, ship_tables: &ExeShipRuntimeTables) -> i32 {
@@ -2038,8 +2080,10 @@ fn dos_surface_height_at_probe(
         if dispatch_kind == 1 {
             return 0;
         }
-        if let Some(surface_height) =
-            ship_tables.surface_height_by_dispatch_kind.get(dispatch_kind).copied()
+        if let Some(surface_height) = ship_tables
+            .surface_height_by_dispatch_kind
+            .get(dispatch_kind)
+            .copied()
         {
             return i32::from(surface_height);
         }
@@ -2055,7 +2099,7 @@ fn dos_surface_height_at_probe(
 fn build_dos_ship_pipeline(
     scene: &DemoPlaybackState,
     ship_tables: &ExeShipRuntimeTables,
-    slices: &[ProjectedRoadSlice],
+    road_coverage: Option<&FrameBuffer320x200>,
     visual: &DerivedShipVisualState,
 ) -> DosShipPipeline {
     let x_fixed = dos_fixed(scene.ship.x_position);
@@ -2071,83 +2115,135 @@ fn build_dos_ship_pipeline(
         shadow_left: raw_x - DOS_SHIP_X_BASE_OFFSET,
         shadow_top: DOS_SHIP_TOP_BASE - raw_y + DOS_SHIP_SHADOW_TOP_OFFSET + shadow_height,
         shadow_center_x: raw_x - DOS_SHIP_CENTER_X_OFFSET,
-        shadow_center_y: DOS_SHIP_TOP_BASE - raw_y + DOS_SHIP_SHADOW_TOP_OFFSET + shadow_height
+        shadow_center_y: DOS_SHIP_TOP_BASE - raw_y
+            + DOS_SHIP_SHADOW_TOP_OFFSET
+            + shadow_height
             + (DOS_SHIP_SHADOW_MASK_HEIGHT as i32 / 2),
     };
 
-    let clip_mask = build_ship_clip_mask_from_slices(slices, placement.sprite_left, placement.sprite_top);
-    let shadow_variant = (visual.on_surface
-        && visual.sprite_kind == ShipSpriteKind::Alive
-        && shadow_height >= 0)
+    let clip_mask = build_ship_clip_mask_from_road_coverage(
+        road_coverage,
+        placement.sprite_left,
+        placement.sprite_top,
+        placement.sprite_center_x,
+    );
+    let shadow_surface_mask = build_shadow_surface_mask_from_road_coverage(
+        road_coverage,
+        placement.shadow_left,
+        placement.shadow_top,
+    );
+    let shadow_variant = (visual.sprite_kind == ShipSpriteKind::Alive && shadow_height >= 0)
         .then_some((shadow_height / 5) as usize)
         .filter(|variant| *variant < DOS_SHIP_SHADOW_VARIANTS);
 
     DosShipPipeline {
         placement,
         clip_mask,
+        shadow_surface_mask,
         shadow_variant,
     }
 }
 
-fn build_ship_clip_mask_from_slices(
-    slices: &[ProjectedRoadSlice],
-    sprite_left: i32,
-    sprite_top: i32,
+fn build_ship_clip_mask_from_road_coverage(
+    _road_coverage: Option<&FrameBuffer320x200>,
+    _sprite_left: i32,
+    _sprite_top: i32,
+    _ship_center_x: i32,
 ) -> [u8; DOS_SHIP_CLIP_MASK_BYTES] {
-    let mut mask = [0u8; DOS_SHIP_CLIP_MASK_BYTES];
+    // DOS does gate ship/shadow writes through mask buffers, but the ship mask is not derived
+    // from the visible road fill. The current road-coverage approximation clips the ship to the
+    // road span and produces the sideways "sliced off" artifact visible in render-demo captures.
+    // Until the original 0x32A5 row-mask path is ported exactly, keep ship pixels unmasked here
+    // and let only the separate shadow surface mask depend on road coverage.
+    let mask = [1u8; DOS_SHIP_CLIP_MASK_BYTES];
+    mask
+}
 
-    for local_y in 0..DOS_SHIP_CLIP_MASK_HEIGHT {
-        let screen_y = sprite_top + local_y as i32;
-        let Some((window_left, window_right)) = clip_window_for_screen_y(slices, screen_y) else {
-            continue;
-        };
-        for local_x in 0..DOS_SHIP_SPRITE_WIDTH {
-            let screen_x = sprite_left + local_x as i32;
-            if screen_x >= window_left && screen_x < window_right {
-                mask[local_y * DOS_SHIP_MASK_ROW_STRIDE + local_x] = 1;
+fn build_shadow_surface_mask_from_road_coverage(
+    road_coverage: Option<&FrameBuffer320x200>,
+    shadow_left: i32,
+    shadow_top: i32,
+) -> [u8; DOS_SHIP_SHADOW_MASK_HEIGHT * DOS_SHIP_SHADOW_MASK_WIDTH] {
+    let mut mask = [0u8; DOS_SHIP_SHADOW_MASK_HEIGHT * DOS_SHIP_SHADOW_MASK_WIDTH];
+    let Some(road_coverage) = road_coverage else {
+        mask.fill(1);
+        return mask;
+    };
+
+    for local_y in 0..DOS_SHIP_SHADOW_MASK_HEIGHT {
+        for local_x in 0..DOS_SHIP_SHADOW_MASK_WIDTH {
+            let screen_x = shadow_left + local_x as i32;
+            let screen_y = shadow_top + local_y as i32;
+            if framebuffer_has_color(road_coverage, screen_x, screen_y) {
+                mask[local_y * DOS_SHIP_SHADOW_MASK_WIDTH + local_x] = 1;
             }
         }
-    }
-
-    if mask.iter().all(|entry| *entry == 0) {
-        mask.fill(1);
     }
 
     mask
 }
 
-fn clip_window_for_screen_y(slices: &[ProjectedRoadSlice], screen_y: i32) -> Option<(i32, i32)> {
-    let slice = slices
-        .iter()
-        .find(|slice| screen_y >= slice.top_y as i32 && screen_y < slice.bottom_y as i32)?;
-    let height = (slice.bottom_y as i32 - slice.top_y as i32).max(1) as f32;
-    let t = ((screen_y - slice.top_y as i32) as f32 / height).clamp(0.0, 1.0);
-    let center = lerp(slice.center_top, slice.center_bottom, t);
-    let road_width = lerp(slice.width_top, slice.width_bottom, t);
-
-    if let Some((start, end)) = slice.tunnel_span {
-        let left = project_span_x(center, road_width, start, start, t);
-        let right = project_span_x(center, road_width, end, end, t);
-        return Some((left, right));
+#[cfg_attr(not(test), allow(dead_code))]
+fn clip_window_for_screen_y(
+    road_coverage: &FrameBuffer320x200,
+    screen_y: i32,
+    ship_center_x: i32,
+) -> Option<(i32, i32)> {
+    if screen_y < 0 || screen_y >= FRAMEBUFFER_HEIGHT as i32 {
+        return None;
     }
 
-    let first_span = slice.spans.first()?;
-    let last_span = slice.spans.last()?;
-    let left = project_span_x(
-        center,
-        road_width,
-        first_span.top_start,
-        first_span.bottom_start,
-        t,
-    );
-    let right = project_span_x(
-        center,
-        road_width,
-        last_span.top_end,
-        last_span.bottom_end,
-        t,
-    );
-    Some((left, right))
+    let mut best_run = None;
+    let mut best_distance = i32::MAX;
+    let mut x = 0i32;
+
+    while x < FRAMEBUFFER_WIDTH as i32 {
+        while x < FRAMEBUFFER_WIDTH as i32 && !framebuffer_has_color(road_coverage, x, screen_y) {
+            x += 1;
+        }
+        if x >= FRAMEBUFFER_WIDTH as i32 {
+            break;
+        }
+
+        let run_left = x;
+        while x < FRAMEBUFFER_WIDTH as i32 && framebuffer_has_color(road_coverage, x, screen_y) {
+            x += 1;
+        }
+        let run_right = x;
+        let contains_ship = ship_center_x >= run_left && ship_center_x < run_right;
+        let distance = if contains_ship {
+            0
+        } else if ship_center_x < run_left {
+            run_left - ship_center_x
+        } else {
+            ship_center_x - (run_right - 1)
+        };
+        let best_width = best_run.map(|(left, right)| right - left).unwrap_or(0);
+        let run_width = run_right - run_left;
+        let is_better =
+            distance < best_distance || (distance == best_distance && run_width > best_width);
+        if is_better {
+            best_distance = distance;
+            best_run = Some((run_left, run_right));
+        }
+    }
+
+    best_run
+}
+
+fn framebuffer_has_color(frame: &FrameBuffer320x200, x: i32, y: i32) -> bool {
+    if x < 0 || y < 0 {
+        return false;
+    }
+    let x = x as usize;
+    let y = y as usize;
+    if x >= FRAMEBUFFER_WIDTH || y >= FRAMEBUFFER_HEIGHT {
+        return false;
+    }
+    let offset = (y * FRAMEBUFFER_WIDTH + x) * 4;
+    frame.pixels_rgba[offset] != 0
+        || frame.pixels_rgba[offset + 1] != 0
+        || frame.pixels_rgba[offset + 2] != 0
 }
 
 fn dos_ship_vertical_state(scene: &DemoPlaybackState) -> i32 {
@@ -2477,7 +2573,7 @@ impl CarAtlas {
         if sprites.len() < 48 {
             return None;
         }
-        if raw_sprites.len() < 77 {
+        if raw_sprites.len() < DOS_EXACT_SHIP_FRAME_START + DOS_EXACT_SHIP_FRAME_COUNT {
             return None;
         }
         let explosion_frames = sprites
@@ -2486,7 +2582,11 @@ impl CarAtlas {
             .cloned()
             .map(trim_sprite)
             .collect::<Vec<_>>();
-        let exact_ship_frames_raw = raw_sprites[14..77]
+        // The raw full-width split includes four tiny fragments between the explosion strip and
+        // the real 63-frame DOS ship run. Start at the first full ship frame, not at the raw
+        // split index that merely follows the explosion frames.
+        let exact_ship_frames_raw = raw_sprites
+            [DOS_EXACT_SHIP_FRAME_START..DOS_EXACT_SHIP_FRAME_START + DOS_EXACT_SHIP_FRAME_COUNT]
             .iter()
             .cloned()
             .map(rotate_sprite_cw)
@@ -2712,20 +2812,21 @@ mod tests {
     use std::path::PathBuf;
 
     use skyroads_core::{
-        AppInput, AttractModeApp, ControlMode, DisplaySettings, RenderScene,
-        SettingsMenuCursor, SettingsMenuScene,
+        AppInput, AttractModeApp, ControlMode, DisplaySettings, RenderScene, SettingsMenuCursor,
+        SettingsMenuScene,
     };
     use skyroads_data::{
         level_from_road_entry, load_demo_rec_path, load_roads_lzs_path, load_skyroads_exe_path,
-        ExeShipRuntimeTables, GROUND_Y, RgbColor,
+        ExeShipRuntimeTables, RgbColor, GROUND_Y,
     };
 
     use super::{
-        derive_ship_visual_state, dos_ship_vertical_state, frame_hash, ship_screen_placement,
-        should_draw_game_over_overlay, sprite_nontransparent_bounds, AttractModeAssets, CarAtlas,
-        DerivedShipVisualState, DosShipPipeline, FrameBuffer320x200, ReferenceRenderer,
-        ShipScreenPlacement, ShipSpriteKind, DOS_EXPLOSION_ANIMATION_TICKS,
-        DOS_NON_ALIVE_ANIMATION_TICKS, DOS_SHIP_CLIP_MASK_BYTES,
+        build_dos_ship_pipeline, clip_window_for_screen_y, derive_ship_visual_state,
+        dos_ship_vertical_state, frame_hash, ship_screen_placement, should_draw_game_over_overlay,
+        sprite_nontransparent_bounds, AttractModeAssets, CarAtlas, DerivedShipVisualState,
+        DosShipPipeline, FrameBuffer320x200, ReferenceRenderer, ShipScreenPlacement,
+        ShipSpriteKind, DOS_EXPLOSION_ANIMATION_TICKS, DOS_NON_ALIVE_ANIMATION_TICKS,
+        DOS_SHIP_CLIP_MASK_BYTES, DOS_SHIP_SHADOW_MASK_HEIGHT, DOS_SHIP_SHADOW_MASK_WIDTH,
     };
 
     #[derive(Debug, Clone, Copy)]
@@ -2782,7 +2883,25 @@ mod tests {
         assert!(matches!(tick.render_scene, RenderScene::Gameplay(_)));
     }
 
-    fn gameplay_scene_after_steps(input: AppInput, steps: usize) -> skyroads_core::DemoPlaybackState {
+    fn enter_demo_playback(app: &mut AttractModeApp) {
+        for _ in 0..35 {
+            app.tick(AppInput::default());
+        }
+        app.tick(AppInput {
+            space: true,
+            ..AppInput::default()
+        });
+        for _ in 0..(70 * 5) {
+            app.tick(AppInput::default());
+        }
+        let tick = app.tick(AppInput::default());
+        assert!(matches!(tick.render_scene, RenderScene::DemoPlayback(_)));
+    }
+
+    fn gameplay_scene_after_steps(
+        input: AppInput,
+        steps: usize,
+    ) -> skyroads_core::DemoPlaybackState {
         let mut app = make_app();
         enter_gameplay(&mut app);
 
@@ -2815,6 +2934,22 @@ mod tests {
         }
 
         scenes
+    }
+
+    fn demo_scene_after_steps(steps: usize) -> skyroads_core::DemoPlaybackState {
+        let mut app = make_app();
+        enter_demo_playback(&mut app);
+
+        let mut scene = None;
+        for _ in 0..steps {
+            let tick = app.tick(AppInput::default());
+            let RenderScene::DemoPlayback(current) = tick.render_scene else {
+                panic!("expected demo playback render scene");
+            };
+            scene = Some(current);
+        }
+
+        scene.expect("expected at least one demo step")
     }
 
     fn placement_probe(scene: &skyroads_core::DemoPlaybackState) -> PlacementProbe {
@@ -2891,7 +3026,16 @@ mod tests {
         assert_eq!(atlas.exact_ship_frames_raw.len(), 63);
         assert_eq!(atlas.exact_ship_frames.len(), 63);
         assert_eq!(atlas.alive_center.len(), 3);
-        assert!(atlas.exact_ship_frames_raw.iter().all(|frame| frame.height == 24));
+        assert!(atlas
+            .exact_ship_frames_raw
+            .iter()
+            .all(|frame| frame.height == 24));
+        let first_exact_bounds =
+            sprite_nontransparent_bounds(&atlas.exact_ship_frames_raw[0]).unwrap();
+        assert!(
+            first_exact_bounds.2 - first_exact_bounds.0 >= 20,
+            "expected the first exact ship frame to be a full ship sprite, got bounds {first_exact_bounds:?}"
+        );
         assert!(atlas.alive_center[0].width > atlas.alive_center[0].height);
     }
 
@@ -2924,6 +3068,7 @@ mod tests {
             let mut pipeline = DosShipPipeline {
                 placement,
                 clip_mask: [1; DOS_SHIP_CLIP_MASK_BYTES],
+                shadow_surface_mask: [1; DOS_SHIP_SHADOW_MASK_HEIGHT * DOS_SHIP_SHADOW_MASK_WIDTH],
                 shadow_variant: None,
             };
             let mut frame = FrameBuffer320x200::new();
@@ -2957,6 +3102,137 @@ mod tests {
                 "expected exact frame {index} to keep its raw bottom edge"
             );
         }
+    }
+
+    #[test]
+    fn flat_opening_road_does_not_clip_ship_when_steering() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+        let car_atlas = renderer.car_atlas.as_ref().unwrap();
+        let background = RgbColor::new(255, 0, 255);
+
+        for input in [
+            AppInput {
+                up_held: true,
+                left_held: true,
+                ..AppInput::default()
+            },
+            AppInput {
+                up_held: true,
+                right_held: true,
+                ..AppInput::default()
+            },
+        ] {
+            let scene = gameplay_scene_after_steps(input, 8);
+            assert!(scene.ship.is_on_ground, "expected early steering scene to stay grounded");
+            assert!(
+                scene.current_row <= 24,
+                "expected early steering scene to stay on the opening flat road, got row {}",
+                scene.current_row
+            );
+
+            let visual = derive_ship_visual_state(&scene, &renderer.assets.dos_ship_tables);
+            let exact_frame_index = visual
+                .exact_ship_frame_index
+                .expect("expected live steering scene to use an exact ship frame");
+            let road_coverage = renderer.build_dos_road_coverage_frame(&scene);
+            let mut pipeline = build_dos_ship_pipeline(
+                &scene,
+                &renderer.assets.dos_ship_tables,
+                road_coverage.as_ref(),
+                &visual,
+            );
+            let placement = pipeline.placement;
+            let mut frame = FrameBuffer320x200::new();
+            frame.clear(background);
+
+            renderer.draw_ship_sprite(&mut frame, scene.frame_index, &visual, &mut pipeline);
+
+            let rendered_bounds =
+                frame_non_background_bounds(&frame, background).expect("expected ship pixels");
+            let raw_bounds = sprite_nontransparent_bounds(
+                &car_atlas.exact_ship_frames_raw[exact_frame_index],
+            )
+            .expect("expected raw ship pixels");
+
+            assert_eq!(
+                rendered_bounds.0 as i32 - placement.sprite_left,
+                raw_bounds.0 as i32,
+                "expected steering frame {} to keep the raw left edge",
+                scene.frame_index
+            );
+            assert_eq!(
+                rendered_bounds.2 as i32 - placement.sprite_left,
+                raw_bounds.2 as i32,
+                "expected steering frame {} to keep the raw right edge",
+                scene.frame_index
+            );
+        }
+    }
+
+    #[test]
+    fn airborne_demo_left_edge_keeps_ship_pixels_visible() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+        let scene = demo_scene_after_steps(760);
+        let frame = renderer.render_scene(&RenderScene::DemoPlayback(scene.clone()));
+
+        let mut ship_pixels = 0usize;
+        for y in 0..72 {
+            for x in 0..64 {
+                let offset = (y * usize::from(frame.width) + x) * 4;
+                let r = frame.pixels_rgba[offset];
+                let g = frame.pixels_rgba[offset + 1];
+                let b = frame.pixels_rgba[offset + 2];
+                if b > 90 && b > r && b > g {
+                    ship_pixels += 1;
+                }
+            }
+        }
+
+        assert!(
+            ship_pixels > 24,
+            "expected airborne left-edge demo frame to keep visible ship pixels, found {ship_pixels}"
+        );
+    }
+
+    #[test]
+    fn road_coverage_clip_window_prefers_span_containing_ship_center() {
+        let mut coverage = FrameBuffer320x200::new();
+        coverage.clear(RgbColor::new(0, 0, 0));
+        coverage.fill_rect(24, 80, 28, 1, RgbColor::new(255, 255, 255));
+        coverage.fill_rect(118, 80, 44, 1, RgbColor::new(255, 255, 255));
+
+        let window = clip_window_for_screen_y(&coverage, 80, 136).expect("expected coverage span");
+
+        assert_eq!(window, (118, 162));
+    }
+
+    #[test]
+    fn airborne_alive_ship_keeps_shadow_variant() {
+        let ship_tables = dos_ship_tables();
+        let scenes = gameplay_scenes_after_steps(
+            AppInput {
+                up_held: true,
+                space_held: true,
+                ..AppInput::default()
+            },
+            24,
+        );
+        let airborne_scene = scenes
+            .iter()
+            .find(|scene| {
+                scene.ship.state == skyroads_core::ShipState::Alive
+                    && (!scene.ship.is_on_ground || scene.ship.y_position > GROUND_Y)
+            })
+            .expect("expected a live airborne scene");
+        let visual = derive_ship_visual_state(airborne_scene, &ship_tables);
+        let pipeline = build_dos_ship_pipeline(airborne_scene, &ship_tables, None, &visual);
+
+        assert!(
+            pipeline.shadow_variant.is_some(),
+            "expected live airborne ship to keep a DOS shadow variant"
+        );
     }
 
     #[test]
@@ -3160,12 +3436,23 @@ mod tests {
 
         let grounded = probes
             .iter()
-            .take_while(|probe| probe.state == skyroads_core::ShipState::Alive && probe.is_on_ground)
+            .take_while(|probe| {
+                probe.state == skyroads_core::ShipState::Alive && probe.is_on_ground
+            })
             .copied()
             .collect::<Vec<_>>();
-        let first_sprite_y = grounded.first().map(|probe| probe.sprite_center_y).unwrap_or(0);
-        let first_shadow_y = grounded.first().map(|probe| probe.shadow_center_y).unwrap_or(0);
-        let first_shadow_x = grounded.first().map(|probe| probe.shadow_center_x).unwrap_or(0);
+        let first_sprite_y = grounded
+            .first()
+            .map(|probe| probe.sprite_center_y)
+            .unwrap_or(0);
+        let first_shadow_y = grounded
+            .first()
+            .map(|probe| probe.shadow_center_y)
+            .unwrap_or(0);
+        let first_shadow_x = grounded
+            .first()
+            .map(|probe| probe.shadow_center_x)
+            .unwrap_or(0);
         let max_sprite_y_delta = grounded
             .iter()
             .map(|probe| (probe.sprite_center_y - first_sprite_y).abs())
