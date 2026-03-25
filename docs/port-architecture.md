@@ -136,11 +136,14 @@ Useful generated outputs:
 
 Current status:
 
-- the native data layer already covers roads, level semantics, demo input, TREKDAT records/shapes, MUZAX songs, and EXE runtime tables
-- the native core layer already covers verified demo sampling, renderer row/slot selection, descriptor-to-dispatch mapping, gameplay-row planning, a deterministic gameplay session, and the attract-mode state machine, and it now exports exact ship simulation/control inputs to the renderer instead of guessed ship pose fields
-- the live gameplay call-site disassembly now shows that DOS feeds the road renderer with an eighth-tile `current_row` counter, so the native port has started moving those inputs onto the same scale instead of using whole-tile row indices
-- the first native host layers now exist via [`crates/skyroads-renderer-ref`](/Users/ammaar/Development/skyroads/crates/skyroads-renderer-ref), [`crates/skyroads-audio-ref`](/Users/ammaar/Development/skyroads/crates/skyroads-audio-ref), and [`crates/skyroads-sdl`](/Users/ammaar/Development/skyroads/crates/skyroads-sdl), which together make the current port path playable on macOS with original art/audio assets and a live gameplay path
-- the new DOS oracle path can now capture Road-0 renderer/runtime checkpoints directly from the original executable, but the next missing layers are still the DOS-faithful TREKDAT road renderer, tighter MUZAX/OPL equivalence, and stronger frame/audio equivalence harnesses against the original executable
+- the native data layer already covers roads, level semantics, demo input, TREKDAT records/shapes, MUZAX songs, dashboard assets, and EXE-derived runtime tables
+- the native core layer already covers verified demo sampling, renderer row/slot selection, descriptor-to-dispatch mapping, gameplay-row planning, a deterministic gameplay session, and the attract-mode state machine
+- reverse engineering has now pinned down the live input dispatcher around `0x0952`, including `DS:9602` control-mode selection, the mouse decoder at `0x0B06`, the joystick path around `0x0BA0`, and the shared gameplay control bus written to `DS:933C`, `DS:9600`, and `DS:5488`
+- the controls/settings flow is now driven by that recovered DOS structure: the native app tracks `keyboard` / `joystick` / `mouse`, sound-effects and music toggles, and the settings renderer composes `SETMENU` from its recovered base frame plus white/orange overlay fragments instead of treating it as a stack of full-screen pages
+- the live gameplay path now uses an eighth-tile `current_row` counter, recovered mouse thresholds/recentering, and recovered joystick thresholds, so the SDL host can exercise keyboard, joystick, and DOS-style mouse input through the same core/session path
+- the first native host layers now exist via [`crates/skyroads-renderer-ref`](/Users/ammaar/Development/skyroads/crates/skyroads-renderer-ref), [`crates/skyroads-audio-ref`](/Users/ammaar/Development/skyroads/crates/skyroads-audio-ref), and [`crates/skyroads-sdl`](/Users/ammaar/Development/skyroads/crates/skyroads-sdl), which together make the current port path playable with original art/audio assets and now include an SDL gameplay smoke-test path for WSL/headless validation
+- gameplay presentation is noticeably closer to the DOS build than the initial host, but the renderer is still carrying fallback logic for ship/camera/shadow placement until the exact DOS road/span and view-placement path is fully ported
+- the main missing layers are still the DOS-faithful TREKDAT road renderer, tighter MUZAX/OPL equivalence, and stronger frame/audio equivalence harnesses against the original executable
 
 ## Near-Term Milestones
 

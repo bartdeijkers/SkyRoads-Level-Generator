@@ -153,6 +153,7 @@ SDL controls:
 - `Up / Down`: menu navigation, settings menu, keyboard throttle/brake
 - `Left / Right`: steer, settings menu
 - `Enter`: select, restart
+- `Shift+Enter`: toggle fullscreen on/off
 - `Space`: skip intro, jump, restart
 - `Escape`: back to menu
 - `Q`: quit

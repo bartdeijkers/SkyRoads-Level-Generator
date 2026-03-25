@@ -57,6 +57,7 @@ struct KeyEdges {
 struct HostInput {
     app: AppInput,
     debug_toggle: bool,
+    toggle_fullscreen: bool,
     quit: bool,
 }
 
@@ -89,13 +90,16 @@ struct KeyLatch {
 
 impl KeyLatch {
     fn sample(&mut self, keyboard: sdl::KeyboardState<'_>) -> HostInput {
+        let shift_held =
+            keyboard.is_pressed(scancode::LSHIFT) || keyboard.is_pressed(scancode::RSHIFT);
+        let raw_enter = keyboard.is_pressed(scancode::RETURN);
         let current = KeyEdges {
             up: keyboard.is_pressed(scancode::UP) || keyboard.is_pressed(scancode::W),
             down: keyboard.is_pressed(scancode::DOWN) || keyboard.is_pressed(scancode::S),
             left: keyboard.is_pressed(scancode::LEFT) || keyboard.is_pressed(scancode::A),
             right: keyboard.is_pressed(scancode::RIGHT) || keyboard.is_pressed(scancode::D),
             debug_toggle: keyboard.is_pressed(scancode::TAB),
-            enter: keyboard.is_pressed(scancode::RETURN),
+            enter: raw_enter,
             escape: keyboard.is_pressed(scancode::ESCAPE),
             space: keyboard.is_pressed(scancode::SPACE),
             quit: keyboard.is_pressed(scancode::Q),
@@ -105,13 +109,16 @@ impl KeyLatch {
         let left = take_edge(&mut self.left, current.left);
         let right = take_edge(&mut self.right, current.right);
         let debug_toggle = take_edge(&mut self.debug_toggle, current.debug_toggle);
-        let enter = take_edge(&mut self.enter, current.enter);
+        let enter_edge = take_edge(&mut self.enter, current.enter);
         let escape = take_edge(&mut self.escape, current.escape);
         let space = take_edge(&mut self.space, current.space);
         let quit = take_edge(&mut self.quit, current.quit);
+        let toggle_fullscreen = enter_edge && shift_held;
+        let enter = enter_edge && !shift_held;
 
         HostInput {
             debug_toggle,
+            toggle_fullscreen,
             app: AppInput {
                 up,
                 down,
@@ -124,7 +131,7 @@ impl KeyLatch {
                 down_held: current.down,
                 left_held: current.left,
                 right_held: current.right,
-                enter_held: current.enter,
+                enter_held: current.enter && !shift_held,
                 space_held: current.space,
                 gameplay_controls_override: None,
             },
@@ -291,6 +298,11 @@ fn run() -> Result<()> {
         let control_mode = app.control_mode();
         if input.quit {
             break;
+        }
+        if input.toggle_fullscreen {
+            let mut display_settings = app.display_settings();
+            display_settings.fullscreen = !display_settings.fullscreen;
+            app.set_display_settings(display_settings);
         }
         if input.debug_toggle {
             debug_view = debug_view.next();
@@ -514,6 +526,7 @@ fn print_controls(source_root: &Path) {
     println!("  Left / Right  steer, settings menu");
     println!("  Enter      select, restart after crash/win");
     println!("  Space      skip intro, jump, restart after crash/win");
+    println!("  Shift+Enter toggle fullscreen on/off");
     println!("  Tab        cycle debug views");
     println!("  Escape     back to menu");
     println!("  Q          quit");
@@ -655,4 +668,38 @@ fn center_dos_mouse_for_gameplay(window: &Window, display_rect: Rect) {
     let center_x = display_rect.x + DOS_MOUSE_RECENTER_X * display_rect.w / FRAMEBUFFER_WIDTH;
     let center_y = display_rect.y + DOS_MOUSE_CENTER_Y * display_rect.h / FRAMEBUFFER_HEIGHT;
     window.warp_mouse(center_x, center_y);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{scancode, sdl, KeyLatch};
+
+    fn keyboard(keys: &[usize]) -> sdl::KeyboardState<'static> {
+        let mut state = vec![0u8; scancode::RSHIFT + 1];
+        for key in keys {
+            state[*key] = 1;
+        }
+        let leaked = Box::leak(state.into_boxed_slice());
+        sdl::KeyboardState::from_keys(leaked)
+    }
+
+    #[test]
+    fn shift_enter_toggles_fullscreen_without_triggering_enter() {
+        let mut latch = KeyLatch::default();
+        let sample = latch.sample(keyboard(&[scancode::LSHIFT, scancode::RETURN]));
+
+        assert!(sample.toggle_fullscreen);
+        assert!(!sample.app.enter);
+        assert!(!sample.app.enter_held);
+    }
+
+    #[test]
+    fn plain_enter_still_maps_to_app_enter() {
+        let mut latch = KeyLatch::default();
+        let sample = latch.sample(keyboard(&[scancode::RETURN]));
+
+        assert!(!sample.toggle_fullscreen);
+        assert!(sample.app.enter);
+        assert!(sample.app.enter_held);
+    }
 }

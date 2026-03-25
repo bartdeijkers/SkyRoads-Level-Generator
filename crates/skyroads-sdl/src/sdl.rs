@@ -8,7 +8,9 @@ type Result<T> = std::result::Result<T, String>;
 pub mod scancode {
     pub const A: usize = 4;
     pub const D: usize = 7;
+    pub const LSHIFT: usize = 225;
     pub const Q: usize = 20;
+    pub const RSHIFT: usize = 229;
     pub const S: usize = 22;
     pub const W: usize = 26;
     pub const RETURN: usize = 40;
@@ -430,6 +432,11 @@ pub struct KeyboardState<'a> {
 impl<'a> KeyboardState<'a> {
     pub fn is_pressed(&self, scancode: usize) -> bool {
         self.keys.get(scancode).copied().unwrap_or(0) != 0
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_keys(keys: &'a [u8]) -> Self {
+        Self { keys }
     }
 }
 

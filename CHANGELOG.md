@@ -14,6 +14,7 @@ that baseline.
 ### Added
 - Added `--fullscreen` and `--borderless` launch flags to the SDL host, plus runtime window-mode switching between windowed, borderless, and desktop-fullscreen presentation.
 - Added fullscreen and borderless toggles to the in-game controls/settings menu so display mode can be changed without restarting.
+- Added a `Shift+Enter` hotkey in the SDL host to toggle fullscreen on and off without sending a normal `Enter` action into the app.
 
 ### Changed
 - Updated the settings-menu renderer to extend the recovered `SETMENU` layout with native fullscreen and borderless toggle widgets that follow the existing white-cursor/orange-selected visual language.
