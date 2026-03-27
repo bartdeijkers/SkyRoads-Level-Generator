@@ -8,7 +8,7 @@ use std::process;
 use skyroads_core::{AppInput, AttractModeApp, GameplaySession, RenderScene, ShipState};
 use skyroads_data::{
     level_from_road_entry, load_demo_rec_path, load_muzax_lzs_path, load_roads_lzs_path,
-    load_skyroads_exe_path, load_trekdat_lzs_path, DemoRecording, Error, Level, Result,
+    load_trekdat_lzs_path, shipped_runtime_tables, DemoRecording, Error, Level, Result,
 };
 use skyroads_renderer_ref::{frame_hash, AttractModeAssets, FrameBuffer320x200, ReferenceRenderer};
 
@@ -173,7 +173,7 @@ fn summary(source_root: &Path) -> Result<()> {
     let demo = load_demo_rec_path(source_root.join("DEMO.REC"))?;
     let trekdat = load_trekdat_lzs_path(source_root.join("TREKDAT.LZS"))?;
     let muzax = load_muzax_lzs_path(source_root.join("MUZAX.LZS"))?;
-    let exe = load_skyroads_exe_path(source_root.join("SKYROADS.EXE"))?;
+    let runtime_tables = shipped_runtime_tables();
 
     println!("SkyRoads Native Baseline");
     println!("source_root: {}", normalize_path(source_root));
@@ -268,17 +268,10 @@ fn summary(source_root: &Path) -> Result<()> {
     }
     println!();
 
-    println!("exe:");
-    println!("  header_bytes: {}", exe.header_bytes);
-    println!("  image_size: {}", exe.image_size);
-    println!("  entry_file_offset: {}", exe.entry_file_offset);
-    println!(
-        "  exe_reader_base_file_offset: {}",
-        exe.exe_reader_base_file_offset
-    );
+    println!("runtime_tables:");
     println!(
         "  tile_class_by_low3: {}",
-        exe.runtime_tables
+        runtime_tables
             .tile_class_by_low3
             .values
             .iter()
@@ -288,7 +281,7 @@ fn summary(source_root: &Path) -> Result<()> {
     );
     println!(
         "  draw_dispatch_by_type: {}",
-        exe.runtime_tables
+        runtime_tables
             .draw_dispatch_by_type
             .entries
             .iter()

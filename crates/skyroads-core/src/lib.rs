@@ -2,8 +2,8 @@ mod app;
 mod gameplay;
 
 use skyroads_data::{
-    analyze_road_descriptor, DemoInput, DemoRecording, ExeDispatchEntry, RoadDescriptor, RoadEntry,
-    SkyroadsExe, DEMO_TILE_POSITION_STEP_FP16, ROAD_COLUMNS,
+    analyze_road_descriptor, DemoInput, DemoRecording, ExeDispatchEntry, ExeRuntimeTables,
+    RoadDescriptor, RoadEntry, DEMO_TILE_POSITION_STEP_FP16, ROAD_COLUMNS,
 };
 
 pub use app::{
@@ -85,16 +85,16 @@ pub fn renderer_row_state(current_row: u16) -> RendererRowState {
 }
 
 pub fn plan_renderer_cell(
-    exe: &SkyroadsExe,
+    runtime_tables: &ExeRuntimeTables,
     current_row: u16,
     descriptor_raw: u16,
 ) -> RendererCellPlan {
     let row_state = renderer_row_state(current_row);
     let descriptor = analyze_road_descriptor(descriptor_raw);
     let tile_class =
-        exe.runtime_tables.tile_class_by_low3.values[usize::from(descriptor.dispatch_variant_low3)];
+        runtime_tables.tile_class_by_low3.values[usize::from(descriptor.dispatch_variant_low3)];
     let dispatch =
-        exe.runtime_tables.draw_dispatch_by_type.entries[usize::from(descriptor.dispatch_kind)];
+        runtime_tables.draw_dispatch_by_type.entries[usize::from(descriptor.dispatch_kind)];
 
     RendererCellPlan {
         current_row,
@@ -107,13 +107,13 @@ pub fn plan_renderer_cell(
 }
 
 pub fn plan_renderer_row(
-    exe: &SkyroadsExe,
+    runtime_tables: &ExeRuntimeTables,
     current_row: u16,
     road_row: &[u16; ROAD_COLUMNS],
 ) -> RendererRowPlan {
     let row_state = renderer_row_state(current_row);
     let cells = std::array::from_fn(|column_index| {
-        plan_renderer_cell(exe, current_row, road_row[column_index])
+        plan_renderer_cell(runtime_tables, current_row, road_row[column_index])
     });
     RendererRowPlan {
         current_row,
@@ -124,7 +124,7 @@ pub fn plan_renderer_row(
 }
 
 pub fn plan_gameplay_frame<'a>(
-    exe: &SkyroadsExe,
+    runtime_tables: &ExeRuntimeTables,
     demo: &'a DemoRecording,
     road: &'a RoadEntry,
     road_row_index: usize,
@@ -139,7 +139,7 @@ pub fn plan_gameplay_frame<'a>(
         demo_input: demo.entries.get(demo_cursor.index),
         road_index: road.index,
         road_row_index,
-        renderer_row: plan_renderer_row(exe, current_row, road_row),
+        renderer_row: plan_renderer_row(runtime_tables, current_row, road_row),
     })
 }
 
@@ -147,7 +147,7 @@ pub fn plan_gameplay_frame<'a>(
 mod tests {
     use std::path::PathBuf;
 
-    use skyroads_data::{load_demo_rec_path, load_roads_lzs_path, load_skyroads_exe_path};
+    use skyroads_data::{load_demo_rec_path, load_roads_lzs_path, shipped_runtime_tables};
 
     use super::{
         demo_cursor, demo_index_for_z_position, plan_gameplay_frame, plan_renderer_cell,
@@ -198,17 +198,17 @@ mod tests {
     }
 
     #[test]
-    fn renderer_plan_uses_exe_runtime_tables() {
-        let exe = load_skyroads_exe_path(repo_root().join("SKYROADS.EXE")).unwrap();
+    fn renderer_plan_uses_shipped_runtime_tables() {
+        let runtime_tables = shipped_runtime_tables();
 
-        let plan_type_2 = plan_renderer_cell(&exe, 0x0015, 0x0200);
+        let plan_type_2 = plan_renderer_cell(&runtime_tables, 0x0015, 0x0200);
         assert_eq!(plan_type_2.road_row_group, 2);
         assert_eq!(plan_type_2.trekdat_slot, 5);
         assert_eq!(plan_type_2.tile_class, 3);
         assert_eq!(plan_type_2.dispatch.target, 0x2E9F);
         assert_eq!(plan_type_2.dispatch.target_label, Some("draw_type_2"));
 
-        let plan_type_5 = plan_renderer_cell(&exe, 0x0007, 0x0507);
+        let plan_type_5 = plan_renderer_cell(&runtime_tables, 0x0007, 0x0507);
         assert_eq!(plan_type_5.road_row_group, 0);
         assert_eq!(plan_type_5.trekdat_slot, 7);
         assert_eq!(plan_type_5.tile_class, 4);
@@ -218,11 +218,11 @@ mod tests {
 
     #[test]
     fn renderer_row_plan_matches_shipped_mixed_dispatch_row() {
-        let exe = load_skyroads_exe_path(repo_root().join("SKYROADS.EXE")).unwrap();
+        let runtime_tables = shipped_runtime_tables();
         let roads = load_roads_lzs_path(repo_root().join("ROADS.LZS")).unwrap();
 
         let road_row = &roads.roads[0].rows[83];
-        let plan = plan_renderer_row(&exe, 0x0015, road_row);
+        let plan = plan_renderer_row(&runtime_tables, 0x0015, road_row);
         assert_eq!(plan.road_row_group, 2);
         assert_eq!(plan.trekdat_slot, 5);
         assert_eq!(plan.cells[0].descriptor.raw, 0x0400);
@@ -237,11 +237,13 @@ mod tests {
 
     #[test]
     fn gameplay_frame_plan_combines_demo_and_row_dispatch() {
-        let exe = load_skyroads_exe_path(repo_root().join("SKYROADS.EXE")).unwrap();
+        let runtime_tables = shipped_runtime_tables();
         let roads = load_roads_lzs_path(repo_root().join("ROADS.LZS")).unwrap();
         let demo = load_demo_rec_path(repo_root().join("DEMO.REC")).unwrap();
 
-        let frame = plan_gameplay_frame(&exe, &demo, &roads.roads[2], 80, 0x0015, 0x0666).unwrap();
+        let frame =
+            plan_gameplay_frame(&runtime_tables, &demo, &roads.roads[2], 80, 0x0015, 0x0666)
+                .unwrap();
         assert_eq!(frame.demo_cursor.index, 1);
         assert_eq!(frame.demo_input.unwrap().byte, 5);
         assert_eq!(frame.road_index, 2);

@@ -8,6 +8,7 @@ mod image;
 mod level;
 mod muzax;
 mod roads;
+mod shipped_runtime_tables;
 mod sound;
 mod trekdat;
 
@@ -46,6 +47,7 @@ pub use roads::{
     DispatchSample, RoadDescriptor, RoadDescriptorCatalog, RoadDescriptorEntry, RoadEntry,
     RoadSample, RoadsArchive, ROAD_COLUMNS,
 };
+pub use shipped_runtime_tables::{shipped_runtime_tables, shipped_ship_runtime_tables};
 pub use sound::{
     load_intro_snd_bytes, load_intro_snd_path, load_sfx_snd_bytes, load_sfx_snd_path, Pcm8Sample,
     SfxBank, SfxEntry, SAMPLE_RATE_PCM_8K,

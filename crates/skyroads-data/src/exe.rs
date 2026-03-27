@@ -332,6 +332,8 @@ fn read_shadow_masks(
 mod tests {
     use std::path::PathBuf;
 
+    use crate::shipped_runtime_tables::shipped_runtime_tables;
+
     use super::load_skyroads_exe_path;
 
     fn repo_root() -> PathBuf {
@@ -339,21 +341,13 @@ mod tests {
     }
 
     #[test]
-    fn shipped_exe_matches_verified_runtime_tables() {
-        let exe = load_skyroads_exe_path(repo_root().join("SKYROADS.EXE")).unwrap();
-        assert_eq!(exe.header_bytes, 512);
-        assert_eq!(exe.image_size, 29960);
-        assert_eq!(exe.entry_file_offset, 25296);
-        assert_eq!(exe.exe_reader_base_file_offset, 26848);
-        assert_eq!(exe.relocations.len(), 2);
-        assert_eq!(exe.relocations[0].file_offset, 15534);
-        assert_eq!(exe.relocations[1].file_offset, 25297);
+    fn shipped_runtime_tables_match_verified_values() {
+        let runtime_tables = shipped_runtime_tables();
         assert_eq!(
-            exe.runtime_tables.tile_class_by_low3.values,
+            runtime_tables.tile_class_by_low3.values,
             vec![1, 2, 3, 3, 4, 4, 1, 1]
         );
-        let dispatch_targets = exe
-            .runtime_tables
+        let dispatch_targets = runtime_tables
             .draw_dispatch_by_type
             .entries
             .iter()
@@ -367,16 +361,16 @@ mod tests {
             ]
         );
         assert_eq!(
-            exe.runtime_tables.ship.screen_x_bias_by_lane,
+            runtime_tables.ship.screen_x_bias_by_lane,
             [-1, -1, -1, 0, 1, 2, 4]
         );
         assert_eq!(
-            exe.runtime_tables.ship.surface_height_by_dispatch_kind,
+            runtime_tables.ship.surface_height_by_dispatch_kind,
             [0x2800, 0x3200, 0x3200, 0x3200, 0x3C00, 0x3C00]
         );
-        assert_eq!(exe.runtime_tables.ship.thrust_phase_by_cycle, [0, 1, 2, 1]);
+        assert_eq!(runtime_tables.ship.thrust_phase_by_cycle, [0, 1, 2, 1]);
         assert_eq!(
-            exe.runtime_tables.ship.shadow_masks[0]
+            runtime_tables.ship.shadow_masks[0]
                 .iter()
                 .copied()
                 .map(usize::from)
@@ -384,12 +378,30 @@ mod tests {
             156
         );
         assert_eq!(
-            exe.runtime_tables.ship.shadow_masks[4]
+            runtime_tables.ship.shadow_masks[4]
                 .iter()
                 .copied()
                 .map(usize::from)
                 .sum::<usize>(),
             12
         );
+    }
+
+    #[test]
+    fn bundled_exe_matches_shipped_runtime_tables_if_present() {
+        let exe_path = repo_root().join("SKYROADS.EXE");
+        if !exe_path.exists() {
+            return;
+        }
+
+        let exe = load_skyroads_exe_path(exe_path).unwrap();
+        assert_eq!(exe.header_bytes, 512);
+        assert_eq!(exe.image_size, 29960);
+        assert_eq!(exe.entry_file_offset, 25296);
+        assert_eq!(exe.exe_reader_base_file_offset, 26848);
+        assert_eq!(exe.relocations.len(), 2);
+        assert_eq!(exe.relocations[0].file_offset, 15534);
+        assert_eq!(exe.relocations[1].file_offset, 25297);
+        assert_eq!(exe.runtime_tables, shipped_runtime_tables());
     }
 }

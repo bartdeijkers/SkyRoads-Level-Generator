@@ -34,6 +34,7 @@ Current native build status:
 - the shared SkyRoads compression formats are implemented natively
 - intro/menu/demo/gameplay flow exists in a native SDL host
 - original art, HUD assets, sound effects, and music data are wired into the native app
+- the native Rust runtime no longer requires `SKYROADS.EXE` to be present at startup
 - live gameplay and recorded demo playback both run natively
 - visual debug modes exist for inspecting geometry, row state, and renderer behavior
 
@@ -88,7 +89,7 @@ The Rust workspace now contains:
 
 ## Repository Layout
 
-- `crates/skyroads-data`: native loaders for original SkyRoads files and EXE-derived tables
+- `crates/skyroads-data`: native loaders for original SkyRoads files plus built-in shipped runtime tables
 - `crates/skyroads-core`: deterministic app/gameplay state
 - `crates/skyroads-renderer-ref`: reference software renderer
 - `crates/skyroads-audio-ref`: reference audio path
@@ -107,6 +108,8 @@ Requirements:
 - Rust toolchain
 - SDL2 available on your system
 - the bundled SkyRoads DOS data files in this repo, or another equivalent data directory
+
+For the native Rust app and CLI, `SKYROADS.EXE` is no longer required at runtime.
 
 Useful commands:
 

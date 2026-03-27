@@ -5,8 +5,8 @@ use skyroads_core::{
     MainMenuScene, RenderScene, RoadRenderRow, SettingsMenuCursor, SettingsMenuScene,
 };
 use skyroads_data::{
-    load_dashboard_dat_path, load_image_archive_path, load_skyroads_exe_path,
-    load_trekdat_lzs_path, ExeShipRuntimeTables, HudFragmentPack, ImageArchive, ImageFrame,
+    load_dashboard_dat_path, load_image_archive_path, load_trekdat_lzs_path,
+    shipped_ship_runtime_tables, ExeShipRuntimeTables, HudFragmentPack, ImageArchive, ImageFrame,
     LevelCell, Result, RgbColor, TouchEffect, TrekdatArchive, TrekdatCellPointers, TrekdatRecord,
     TrekdatShape, DASHBOARD_COLORS, DOS_SHIP_LANE_COUNT, DOS_SHIP_SHADOW_MASK_HEIGHT,
     DOS_SHIP_SHADOW_MASK_WIDTH, GROUND_Y, LEVEL_CENTER_X, LEVEL_MAX_X, LEVEL_MIN_X,
@@ -308,9 +308,7 @@ impl AttractModeAssets {
             oxygen_gauge: load_dashboard_dat_path(source_root.join("OXY_DISP.DAT"))?,
             fuel_gauge: load_dashboard_dat_path(source_root.join("FUL_DISP.DAT"))?,
             speed_gauge: load_dashboard_dat_path(source_root.join("SPEED.DAT"))?,
-            dos_ship_tables: load_skyroads_exe_path(source_root.join("SKYROADS.EXE"))?
-                .runtime_tables
-                .ship,
+            dos_ship_tables: shipped_ship_runtime_tables(),
         })
     }
 }
@@ -2804,8 +2802,8 @@ mod tests {
         SettingsMenuScene,
     };
     use skyroads_data::{
-        level_from_road_entry, load_demo_rec_path, load_roads_lzs_path, load_skyroads_exe_path,
-        ExeShipRuntimeTables, RgbColor, GROUND_Y,
+        level_from_road_entry, load_demo_rec_path, load_roads_lzs_path,
+        shipped_ship_runtime_tables, ExeShipRuntimeTables, RgbColor, GROUND_Y,
     };
 
     use super::{
@@ -2839,10 +2837,7 @@ mod tests {
     }
 
     fn dos_ship_tables() -> ExeShipRuntimeTables {
-        load_skyroads_exe_path(repo_root().join("SKYROADS.EXE"))
-            .unwrap()
-            .runtime_tables
-            .ship
+        shipped_ship_runtime_tables()
     }
 
     fn make_app() -> AttractModeApp {
