@@ -45,6 +45,16 @@ POWERSHELL_SEND_KEYS = {
     "left": "{LEFT}",
     "right": "{RIGHT}",
 }
+ADDKEY_KEYWORDS = {
+    "space": "space",
+    "return": "enter",
+    "enter": "enter",
+    "escape": "esc",
+    "up": "up",
+    "down": "down",
+    "left": "left",
+    "right": "right",
+}
 BIOS_KEYWORDS = {
     "space": (0x20, 0x39),
     "return": (0x0D, 0x1C),
@@ -70,6 +80,10 @@ VGA_FRAME_OFFSET = "0000"
 VGA_FRAME_BYTES = 320 * 200
 FIXTURE_BUNDLE_VERSION = 1
 DEFAULT_FIXTURE_ROOT = Path("fixtures/dos-gameplay-renderer")
+FILE_OPEN_RE = re.compile(r"LOG:\s+(\d+)\s+FILES:file open command (\d+) file (.+)")
+FILE_READ_RE = re.compile(r"LOG:\s+(\d+)\s+(?:DEBUG )?FILES:Reading (\d+) bytes from (.+)")
+FILE_CLOSE_RE = re.compile(r"LOG:\s+(\d+)\s+FILES:Closing file (.+)")
+TRACE_DEVICE_NAMES = frozenset({"CON", "PRN", "NUL", "AUX"})
 
 
 def running_in_wsl() -> bool:
@@ -141,6 +155,20 @@ class KeyEvent:
 
 
 @dataclass(frozen=True)
+class AddKeySequence:
+    events: tuple[KeyEvent, ...]
+
+    def shell_commands(self) -> tuple[str, ...]:
+        commands: list[str] = []
+        elapsed_milliseconds = 0
+        for event in self.events:
+            button_name = addkey_button_name(event.key_name)
+            elapsed_milliseconds += max(0, round(event.delay_seconds * 1000))
+            commands.append(f"ADDKEY p{elapsed_milliseconds} {button_name}")
+        return tuple(commands)
+
+
+@dataclass(frozen=True)
 class StageSpec:
     name: str
     resume_command: str
@@ -156,6 +184,7 @@ class CheckpointSpec:
     resume_command: str = "f5"
     repeat_count: int = 1
     bios_keys: tuple[str, ...] = ()
+    frame_bios_keys: tuple[tuple[str, ...], ...] = ()
     capture_screen: bool = False
     timeout_seconds: float | None = None
 
@@ -167,10 +196,27 @@ class OraclePreset:
     breakpoints: tuple[BreakpointSpec, ...]
     dumps: tuple[DumpSpec, ...]
     bios_keys: tuple[str, ...] = ()
+    guest_launch_sequence: AddKeySequence | None = None
+    guest_launch_uses_bios_keys: bool = False
+    guest_launch_uses_stages: bool = False
     auto_keys: tuple[KeyEvent, ...] = ()
     warmup_vrt_count: int = 0
     stages: tuple[StageSpec, ...] = ()
     checkpoints: tuple[CheckpointSpec, ...] = ()
+
+
+ROAD0_MENU_LAUNCH_AUTO_KEYS = (
+    KeyEvent(6.0, "space"),
+    KeyEvent(1.0, "space"),
+    KeyEvent(1.0, "space"),
+    KeyEvent(1.0, "return"),
+    KeyEvent(0.75, "return"),
+)
+ROAD0_LAUNCH_AUTO_KEYS = ROAD0_MENU_LAUNCH_AUTO_KEYS + (
+    KeyEvent(6.0, "return"),
+)
+ROAD0_MENU_LAUNCH_ADDKEY = AddKeySequence(ROAD0_MENU_LAUNCH_AUTO_KEYS)
+ROAD0_LAUNCH_ADDKEY = AddKeySequence(ROAD0_LAUNCH_AUTO_KEYS)
 
 
 ROAD0_INITIAL_FRAME = OraclePreset(
@@ -189,6 +235,9 @@ ROAD0_INITIAL_FRAME = OraclePreset(
     bios_keys=(
         "space",
     ),
+    guest_launch_sequence=ROAD0_LAUNCH_ADDKEY,
+    guest_launch_uses_bios_keys=False,
+    guest_launch_uses_stages=False,
     warmup_vrt_count=1,
     stages=(
         StageSpec("after_first_space", "vrt", repeat_count=4, capture_screen=True),
@@ -197,12 +246,124 @@ ROAD0_INITIAL_FRAME = OraclePreset(
         StageSpec("queue_start_press", "vrt", bios_keys=("return",), repeat_count=6, capture_screen=True),
         StageSpec("queue_confirm_press", "f5", bios_keys=("return",), capture_screen=False, timeout_seconds=60.0),
     ),
-    auto_keys=(
-        KeyEvent(6.0, "space"),
-        KeyEvent(1.0, "space"),
-        KeyEvent(1.0, "space"),
-        KeyEvent(1.0, "return"),
-        KeyEvent(0.75, "return"),
+    auto_keys=ROAD0_LAUNCH_AUTO_KEYS,
+)
+
+
+def repeat_frame_bios_keys(
+    keys: tuple[str, ...],
+    count: int,
+) -> tuple[tuple[str, ...], ...]:
+    return tuple(keys for _ in range(count))
+
+
+def concat_frame_bios_keys(
+    *chunks: tuple[tuple[str, ...], ...],
+) -> tuple[tuple[str, ...], ...]:
+    combined: list[tuple[str, ...]] = []
+    for chunk in chunks:
+        combined.extend(chunk)
+    return tuple(combined)
+
+
+def make_named_vrt_checkpoints(
+    prefix: str,
+    count: int,
+    *,
+    first_bios_keys: tuple[str, ...] = (),
+) -> tuple[CheckpointSpec, ...]:
+    checkpoints: list[CheckpointSpec] = []
+    for index in range(count):
+        checkpoints.append(
+            CheckpointSpec(
+                name=f"{prefix}-{index + 1:02d}",
+                resume_command="vrt",
+                bios_keys=first_bios_keys if index == 0 else (),
+            )
+        )
+    return tuple(checkpoints)
+
+
+def road0_gameplay_scenario_preset(
+    name: str,
+    description: str,
+    checkpoint_name: str,
+    frame_bios_keys: tuple[tuple[str, ...], ...],
+) -> OraclePreset:
+    return OraclePreset(
+        name=name,
+        description=description,
+        breakpoints=ROAD0_INITIAL_FRAME.breakpoints,
+        dumps=ROAD0_INITIAL_FRAME.dumps,
+        bios_keys=ROAD0_INITIAL_FRAME.bios_keys,
+        guest_launch_sequence=ROAD0_INITIAL_FRAME.guest_launch_sequence,
+        auto_keys=ROAD0_INITIAL_FRAME.auto_keys,
+        warmup_vrt_count=ROAD0_INITIAL_FRAME.warmup_vrt_count,
+        stages=ROAD0_INITIAL_FRAME.stages,
+        checkpoints=(
+            CheckpointSpec(
+                name=checkpoint_name,
+                resume_command="f5",
+                frame_bios_keys=frame_bios_keys,
+            ),
+        ),
+    )
+
+
+ROAD0_STEADY_NEUTRAL = road0_gameplay_scenario_preset(
+    name="road0-steady-neutral",
+    description=(
+        "Start Road 0, advance eight gameplay renderer hits with no gameplay input, "
+        "and capture the steady neutral checkpoint."
+    ),
+    checkpoint_name="steady-neutral",
+    frame_bios_keys=repeat_frame_bios_keys((), 8),
+)
+
+
+ROAD0_SUSTAINED_THROTTLE = road0_gameplay_scenario_preset(
+    name="road0-sustained-throttle",
+    description=(
+        "Start Road 0, inject throttle for twenty-four gameplay frames, and capture "
+        "the sustained-throttle checkpoint."
+    ),
+    checkpoint_name="sustained-throttle",
+    frame_bios_keys=repeat_frame_bios_keys(("up",), 24),
+)
+
+
+ROAD0_STEADY_LEFT = road0_gameplay_scenario_preset(
+    name="road0-steady-left",
+    description=(
+        "Start Road 0, inject throttle plus left steering for twenty-four gameplay "
+        "frames, and capture the steady-left checkpoint."
+    ),
+    checkpoint_name="steady-left",
+    frame_bios_keys=repeat_frame_bios_keys(("up", "left"), 24),
+)
+
+
+ROAD0_STEADY_RIGHT = road0_gameplay_scenario_preset(
+    name="road0-steady-right",
+    description=(
+        "Start Road 0, inject throttle plus right steering for twenty-four gameplay "
+        "frames, and capture the steady-right checkpoint."
+    ),
+    checkpoint_name="steady-right",
+    frame_bios_keys=repeat_frame_bios_keys(("up", "right"), 24),
+)
+
+
+ROAD0_FIRST_AIRBORNE = road0_gameplay_scenario_preset(
+    name="road0-first-airborne",
+    description=(
+        "Start Road 0, inject eight throttle frames and then the first throttle-plus-jump "
+        "frame, and capture the first airborne checkpoint."
+    ),
+    checkpoint_name="first-airborne",
+    frame_bios_keys=concat_frame_bios_keys(
+        repeat_frame_bios_keys(("up",), 8),
+        repeat_frame_bios_keys(("up", "space"), 1),
     ),
 )
 
@@ -236,6 +397,32 @@ PRESETS = {
             for index in range(5)
         ),
     ),
+    "road0-post-confirm-vrt-scan": OraclePreset(
+        name="road0-post-confirm-vrt-scan",
+        description=(
+            "Skip the intro, queue the final Road 0 confirm press, and capture a VRT-by-VRT "
+            "register scan immediately afterwards to diagnose the launch state before gameplay."
+        ),
+        breakpoints=(),
+        dumps=(),
+        bios_keys=ROAD0_INITIAL_FRAME.bios_keys,
+        guest_launch_sequence=ROAD0_MENU_LAUNCH_ADDKEY,
+        guest_launch_uses_bios_keys=True,
+        guest_launch_uses_stages=True,
+        auto_keys=ROAD0_MENU_LAUNCH_AUTO_KEYS,
+        warmup_vrt_count=ROAD0_INITIAL_FRAME.warmup_vrt_count,
+        stages=ROAD0_INITIAL_FRAME.stages[:-1],
+        checkpoints=make_named_vrt_checkpoints(
+            "post-confirm-vrt",
+            16,
+            first_bios_keys=("return",),
+        ),
+    ),
+    ROAD0_STEADY_NEUTRAL.name: ROAD0_STEADY_NEUTRAL,
+    ROAD0_SUSTAINED_THROTTLE.name: ROAD0_SUSTAINED_THROTTLE,
+    ROAD0_STEADY_LEFT.name: ROAD0_STEADY_LEFT,
+    ROAD0_STEADY_RIGHT.name: ROAD0_STEADY_RIGHT,
+    ROAD0_FIRST_AIRBORNE.name: ROAD0_FIRST_AIRBORNE,
 }
 
 
@@ -247,12 +434,14 @@ class DosboxDebuggerSession:
         dosbox: Path,
         time_limit: int,
         cycles: str,
+        pre_launch_commands: tuple[str, ...] = (),
     ) -> None:
         self.source_root = source_root
         self.output_root = output_root
         self.dosbox = dosbox
         self.time_limit = time_limit
         self.cycles = cycles
+        self.pre_launch_commands = pre_launch_commands
         self.raw_log_path = output_root / "oracle.log"
         self.process: subprocess.Popen[bytes] | None = None
         self.master_fd: int | None = None
@@ -260,23 +449,13 @@ class DosboxDebuggerSession:
         self.log_handle = None
 
     def start(self) -> None:
-        command = [
-            str(self.dosbox),
-            "-defaultconf",
-            "-fastlaunch",
-            "-debug",
-            "-break-start",
-            "-time-limit",
-            str(self.time_limit),
-            "-c",
-            f"cycles {self.cycles}",
-            "-c",
-            f"mount c {self.source_root} -nocachedir",
-            "-c",
-            "c:",
-            "-c",
-            "skyroads.exe",
-        ]
+        command = build_dosbox_command(
+            self.dosbox,
+            self.source_root,
+            self.time_limit,
+            self.cycles,
+            self.pre_launch_commands,
+        )
         master_fd, slave_fd = os.openpty()
         flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
         fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
@@ -441,6 +620,111 @@ def parse_dump(value: str) -> DumpSpec:
     )
 
 
+def addkey_button_name(key_name: str) -> str:
+    try:
+        return ADDKEY_KEYWORDS[key_name]
+    except KeyError as exc:
+        raise ValueError(f"unsupported ADDKEY key name {key_name!r}") from exc
+
+
+def build_dosbox_command(
+    dosbox: Path,
+    source_root: Path,
+    time_limit: int,
+    cycles: str,
+    pre_launch_commands: tuple[str, ...] = (),
+) -> list[str]:
+    command = [
+        str(dosbox),
+        "-defaultconf",
+        "-fastlaunch",
+        "-debug",
+        "-break-start",
+        "-time-limit",
+        str(time_limit),
+    ]
+    shell_commands = [
+        f"cycles {cycles}",
+        f"mount c {source_root} -nocachedir",
+        "c:",
+        *pre_launch_commands,
+        "skyroads.exe",
+    ]
+    for shell_command in shell_commands:
+        command.extend(["-c", shell_command])
+    return command
+
+
+@dataclass(frozen=True)
+class LaunchPlan:
+    guest_launch_sequence: AddKeySequence | None
+    launch_input_backend: str
+    bios_keys: tuple[str, ...]
+    auto_keys: tuple[KeyEvent, ...]
+    stages: tuple[StageSpec, ...]
+    pre_launch_commands: tuple[str, ...]
+
+
+def select_stage_flow(
+    stages: tuple[StageSpec, ...],
+    *,
+    no_stages: bool,
+    no_bios_keys: bool,
+) -> tuple[StageSpec, ...]:
+    if no_stages:
+        return tuple()
+    if no_bios_keys:
+        return tuple(stage for stage in stages if not stage.bios_keys)
+    return stages
+
+
+def build_launch_plan(
+    preset: OraclePreset,
+    *,
+    key_backend: str | None,
+    no_auto_keys: bool,
+    no_bios_keys: bool,
+    no_stages: bool,
+) -> LaunchPlan:
+    guest_launch_sequence = None if no_auto_keys else preset.guest_launch_sequence
+    if guest_launch_sequence is not None:
+        guest_bios_keys = preset.bios_keys if preset.guest_launch_uses_bios_keys else tuple()
+        guest_stages = preset.stages if preset.guest_launch_uses_stages else tuple()
+        return LaunchPlan(
+            guest_launch_sequence=guest_launch_sequence,
+            launch_input_backend="guest-addkey",
+            bios_keys=tuple() if no_bios_keys else guest_bios_keys,
+            auto_keys=tuple(),
+            stages=select_stage_flow(
+                guest_stages,
+                no_stages=no_stages,
+                no_bios_keys=no_bios_keys,
+            ),
+            pre_launch_commands=guest_launch_sequence.shell_commands(),
+        )
+
+    auto_keys = tuple() if no_auto_keys or key_backend is None else preset.auto_keys
+    if auto_keys:
+        launch_input_backend = f"host-{key_backend}"
+    elif no_auto_keys:
+        launch_input_backend = "disabled"
+    else:
+        launch_input_backend = "manual"
+
+    return LaunchPlan(
+        guest_launch_sequence=None,
+        launch_input_backend=launch_input_backend,
+        bios_keys=tuple() if no_bios_keys else preset.bios_keys,
+        auto_keys=auto_keys,
+        stages=select_stage_flow(
+            preset.stages,
+            no_stages=no_stages,
+            no_bios_keys=no_bios_keys,
+        ),
+        pre_launch_commands=tuple(),
+    )
+
+
 def parse_registers(log_text: str) -> dict[str, int]:
     marker = f"LOG: EV of '{REGISTER_COMMAND.removeprefix('EV ')}' is:"
     marker_index = log_text.rfind(marker)
@@ -467,6 +751,194 @@ def infer_breakpoint_name(registers: dict[str, int], breakpoints: list[Breakpoin
 def sanitize_path_component(value: str) -> str:
     sanitized = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip())
     return sanitized.strip(".-") or "checkpoint"
+
+
+def normalize_trace_name(name: str) -> str:
+    return name.strip().upper()
+
+
+def is_relevant_trace_file(normalized_name: str) -> bool:
+    return not normalized_name.startswith("Z:\\") and normalized_name not in TRACE_DEVICE_NAMES
+
+
+def parse_file_trace(log_path: Path) -> dict[str, Any] | None:
+    if not log_path.exists():
+        return None
+
+    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    files: dict[str, dict[str, Any]] = {}
+    open_events: list[dict[str, Any]] = []
+
+    for line_number, line in enumerate(lines, start=1):
+        if match := FILE_OPEN_RE.search(line):
+            raw_tick, raw_command, raw_name = match.groups()
+            open_command = int(raw_command)
+            if open_command != 0:
+                continue
+
+            name = raw_name.strip()
+            normalized_name = normalize_trace_name(name)
+            entry = files.setdefault(
+                normalized_name,
+                {
+                    "name": name,
+                    "normalized_name": normalized_name,
+                    "open_command": open_command,
+                    "open_count": 0,
+                    "open_line": None,
+                    "open_tick": None,
+                    "close_line": None,
+                    "close_tick": None,
+                    "read_count": 0,
+                    "total_bytes_read": 0,
+                    "read_sizes": [],
+                },
+            )
+            entry["open_count"] = int(entry["open_count"]) + 1
+            if entry["open_line"] is None:
+                entry["open_line"] = line_number
+                entry["open_tick"] = int(raw_tick)
+            open_events.append(
+                {
+                    "name": name,
+                    "normalized_name": normalized_name,
+                    "open_line": line_number,
+                    "open_tick": int(raw_tick),
+                }
+            )
+            continue
+
+        if match := FILE_READ_RE.search(line):
+            _, raw_size, raw_name = match.groups()
+            name = raw_name.strip()
+            normalized_name = normalize_trace_name(name)
+            entry = files.setdefault(
+                normalized_name,
+                {
+                    "name": name,
+                    "normalized_name": normalized_name,
+                    "open_command": None,
+                    "open_count": 0,
+                    "open_line": None,
+                    "open_tick": None,
+                    "close_line": None,
+                    "close_tick": None,
+                    "read_count": 0,
+                    "total_bytes_read": 0,
+                    "read_sizes": [],
+                },
+            )
+            size = int(raw_size)
+            entry["read_count"] = int(entry["read_count"]) + 1
+            entry["total_bytes_read"] = int(entry["total_bytes_read"]) + size
+            read_sizes = entry["read_sizes"]
+            assert isinstance(read_sizes, list)
+            read_sizes.append(size)
+            continue
+
+        if match := FILE_CLOSE_RE.search(line):
+            raw_tick, raw_name = match.groups()
+            normalized_name = normalize_trace_name(raw_name)
+            entry = files.get(normalized_name)
+            if entry is not None and entry["close_line"] is None:
+                entry["close_line"] = line_number
+                entry["close_tick"] = int(raw_tick)
+
+    startup_open_events = [
+        event for event in open_events if is_relevant_trace_file(event["normalized_name"])
+    ]
+
+    startup_sequence: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+    for event in startup_open_events:
+        normalized_name = event["normalized_name"]
+        if normalized_name in seen_names:
+            continue
+        seen_names.add(normalized_name)
+        entry = files[normalized_name]
+        startup_sequence.append(
+            {
+                "name": entry["name"],
+                "normalized_name": normalized_name,
+                "open_line": entry["open_line"],
+                "open_tick": entry["open_tick"],
+                "open_count": entry["open_count"],
+                "read_count": entry["read_count"],
+                "total_bytes_read": entry["total_bytes_read"],
+                "read_sizes": entry["read_sizes"],
+                "close_line": entry["close_line"],
+                "close_tick": entry["close_tick"],
+            }
+        )
+
+    return {
+        "log_line_count": len(lines),
+        "open_event_count": len(open_events),
+        "startup_open_events": startup_open_events,
+        "startup_sequence": startup_sequence,
+        "files": files,
+    }
+
+
+def current_log_snapshot(session: DosboxDebuggerSession) -> dict[str, int]:
+    text = session.read_log()
+    return {
+        "log_byte_count": len(text.encode("utf-8", errors="replace")),
+        "log_line_count": len(text.splitlines()),
+    }
+
+
+def make_phase_marker(
+    session: DosboxDebuggerSession,
+    name: str,
+    kind: str,
+    status: str,
+) -> dict[str, Any]:
+    snapshot = current_log_snapshot(session)
+    return {
+        "name": name,
+        "kind": kind,
+        "status": status,
+        **snapshot,
+    }
+
+
+def build_phase_file_trace(
+    file_trace: dict[str, Any] | None,
+    phase_markers: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not file_trace or not phase_markers:
+        return []
+
+    open_events = file_trace.get("startup_open_events")
+    if not isinstance(open_events, list):
+        return []
+
+    phase_summaries: list[dict[str, Any]] = []
+    event_index = 0
+    previous_line = 0
+    for marker in sorted(phase_markers, key=lambda item: (item["log_line_count"], item["name"])):
+        phase_events: list[dict[str, Any]] = []
+        while event_index < len(open_events) and open_events[event_index]["open_line"] <= marker["log_line_count"]:
+            event = open_events[event_index]
+            if event["open_line"] > previous_line:
+                phase_events.append(event)
+            event_index += 1
+
+        phase_summaries.append(
+            {
+                "name": marker["name"],
+                "kind": marker["kind"],
+                "status": marker["status"],
+                "log_line_count": marker["log_line_count"],
+                "log_byte_count": marker["log_byte_count"],
+                "opened_files": [event["name"] for event in phase_events],
+                "opened_file_lines": [event["open_line"] for event in phase_events],
+            }
+        )
+        previous_line = marker["log_line_count"]
+
+    return phase_summaries
 
 
 def derived_road_window_dump(renderer_state_dump: dict[str, Any]) -> DumpSpec | None:
@@ -570,6 +1042,7 @@ def interpret_dump(dump: DumpSpec, data: bytes) -> dict[str, Any]:
 
 
 def build_markdown(summary: dict[str, Any]) -> str:
+    file_trace = summary.get("file_trace")
     lines = [
         "# SkyRoads DOS Oracle Capture",
         "",
@@ -577,6 +1050,7 @@ def build_markdown(summary: dict[str, Any]) -> str:
         f"- Source root: `{summary['source_root']}`",
         f"- DOSBox-X: `{summary['dosbox']}`",
         f"- Key backend: `{summary['key_backend']}`",
+        f"- Launch input backend: `{summary['launch_input_backend']}`",
         f"- Screenshot backend: `{summary['screenshot_backend']}`",
         f"- Cycles: `{summary['cycles']}`",
         f"- Time limit: `{summary['time_limit_seconds']}` seconds",
@@ -609,6 +1083,25 @@ def build_markdown(summary: dict[str, Any]) -> str:
                 f"- step `{item['step_index']}` stage `{item['stage']}` "
                 f"(repeat `{item['repeat_index']}`): `{item['path']}`"
             )
+    if file_trace and file_trace.get("startup_sequence"):
+        lines.extend(["", "## Startup File Order", ""])
+        for index, item in enumerate(file_trace["startup_sequence"], start=1):
+            lines.append(
+                f"{index}. `{item['name']}`: opened at log line `{item['open_line']}`, "
+                f"{item['open_count']} open(s), {item['read_count']} read(s), "
+                f"{item['total_bytes_read']} byte(s)"
+            )
+    if file_trace and file_trace.get("phase_summaries"):
+        lines.extend(["", "## File Opens By Phase", ""])
+        for phase in file_trace["phase_summaries"]:
+            label = f"{phase['kind']} `{phase['name']}`"
+            if phase["status"] != "completed":
+                label += f" ({phase['status']})"
+            if phase["opened_files"]:
+                opened = ", ".join(f"`{name}`" for name in phase["opened_files"])
+                lines.append(f"- {label}: {opened}")
+            else:
+                lines.append(f"- {label}: none")
     lines.extend(["", "## Checkpoints", ""])
     for checkpoint in summary["checkpoints"]:
         registers = checkpoint["registers"]
@@ -1071,7 +1564,7 @@ def main() -> int:
     parser.add_argument(
         "--no-auto-keys",
         action="store_true",
-        help="Disable the preset's built-in host key sequence.",
+        help="Disable the preset's built-in automatic launch key sequence.",
     )
     parser.add_argument(
         "--no-stages",
@@ -1118,15 +1611,30 @@ def main() -> int:
     key_backend = detect_key_backend()
     screenshot_backend = detect_screenshot_backend()
 
-    session = DosboxDebuggerSession(source_root, output_root, dosbox, args.time_limit, args.cycles)
     notes: list[str] = []
     checkpoints: list[dict[str, Any]] = []
     stage_screenshots: list[dict[str, Any]] = []
-    auto_keys = tuple() if args.no_auto_keys or key_backend is None else preset.auto_keys
-    bios_keys = tuple() if args.no_bios_keys else preset.bios_keys
     warmup_vrt_count = preset.warmup_vrt_count if args.warmup_vrt_count is None else args.warmup_vrt_count
-    stages = tuple() if args.no_stages else (
-        preset.stages if not args.no_bios_keys else tuple(stage for stage in preset.stages if not stage.bios_keys)
+    launch_plan = build_launch_plan(
+        preset,
+        key_backend=key_backend,
+        no_auto_keys=args.no_auto_keys,
+        no_bios_keys=args.no_bios_keys,
+        no_stages=args.no_stages,
+    )
+    guest_launch_sequence = launch_plan.guest_launch_sequence
+    auto_keys = launch_plan.auto_keys
+    launch_input_backend = launch_plan.launch_input_backend
+    bios_keys = launch_plan.bios_keys
+    stages = launch_plan.stages
+    pre_launch_commands = launch_plan.pre_launch_commands
+    session = DosboxDebuggerSession(
+        source_root,
+        output_root,
+        dosbox,
+        args.time_limit,
+        args.cycles,
+        pre_launch_commands=pre_launch_commands,
     )
     key_thread: HostKeySequence | None = None
     prompt_count = 0
@@ -1136,6 +1644,9 @@ def main() -> int:
     breakpoints: list[BreakpointSpec] = []
     breakpoints_resolved = False
     fixture_bundles: list[dict[str, Any]] = []
+    phase_markers: list[dict[str, Any]] = []
+    active_phase_name: str | None = None
+    active_phase_kind: str | None = None
 
     try:
         session.start()
@@ -1171,6 +1682,10 @@ def main() -> int:
                         f"during warm-up VRT {vrt_index + 1}/{warmup_vrt_count}."
                     )
             notes.append(f"Completed warm-up VRT {vrt_index + 1}/{warmup_vrt_count}.")
+        if guest_launch_sequence is not None:
+            notes.append(
+                f"Scheduled the preset guest ADDKEY launch sequence with {len(pre_launch_commands)} timed key event(s)."
+            )
         if bios_keys:
             preload_bios_keyboard_buffer(session, bios_keys)
             notes.append(
@@ -1185,7 +1700,7 @@ def main() -> int:
             notes.append(
                 f"Started the preset {key_backend} key sequence to skip the intro and launch Road 0."
             )
-        else:
+        elif guest_launch_sequence is None:
             if args.no_auto_keys:
                 notes.append(
                     "No automatic key sequence was used because --no-auto-keys was set."
@@ -1200,7 +1715,11 @@ def main() -> int:
                 )
 
         stage_step_index = 0
+        if warmup_vrt_count:
+            phase_markers.append(make_phase_marker(session, "warmup", "warmup", "completed"))
         for stage in stages:
+            active_phase_name = stage.name
+            active_phase_kind = "stage"
             if stage.bios_keys:
                 preload_bios_keyboard_buffer(session, stage.bios_keys)
                 notes.append(
@@ -1246,34 +1765,69 @@ def main() -> int:
             notes.append(
                 f"Completed stage `{stage.name}` via `{stage.resume_command}` x{stage.repeat_count}."
             )
+            phase_markers.append(make_phase_marker(session, stage.name, "stage", "completed"))
+            active_phase_name = None
+            active_phase_kind = None
 
         checkpoint_specs = preset.checkpoints or default_checkpoint_specs(args.resume_command)
         for hit_index, checkpoint_spec in enumerate(checkpoint_specs, start=1):
-            if checkpoint_spec.bios_keys:
-                preload_bios_keyboard_buffer(session, checkpoint_spec.bios_keys)
-                notes.append(
-                    f"Preloaded the BIOS keyboard buffer for checkpoint "
-                    f"`{checkpoint_spec.name or hit_index}` with: "
-                    + ", ".join(checkpoint_spec.bios_keys)
-                )
+            active_phase_name = checkpoint_spec.name or str(hit_index)
+            active_phase_kind = "checkpoint"
             timeout_seconds = checkpoint_spec.timeout_seconds or args.checkpoint_timeout
-            for _ in range(checkpoint_spec.repeat_count):
-                if checkpoint_spec.resume_command == "f5":
-                    session.resume()
-                else:
-                    session.send_line("VRT")
-                _, prompt_count = session.wait_for_prompt(prompt_count, timeout_seconds)
-                if not breakpoints_resolved:
-                    current_registers = capture_register_snapshot(session)
-                    if current_registers["cs"] != 0xF000:
-                        breakpoints = resolve_breakpoints_for_registers(unresolved_breakpoints, current_registers)
-                        for breakpoint in breakpoints:
-                            session.send_line(f"BP {breakpoint.address}")
-                        breakpoints_resolved = True
+            if checkpoint_spec.frame_bios_keys:
+                for frame_index, frame_bios_keys in enumerate(checkpoint_spec.frame_bios_keys, start=1):
+                    if frame_bios_keys:
+                        preload_bios_keyboard_buffer(session, frame_bios_keys)
                         notes.append(
-                            f"Resolved EXE-relative breakpoints against runtime CS `{current_registers['cs']:04X}` "
-                            f"during checkpoint `{checkpoint_spec.name or hit_index}`."
+                            f"Preloaded the BIOS keyboard buffer for checkpoint "
+                            f"`{checkpoint_spec.name or hit_index}` frame step `{frame_index}` with: "
+                            + ", ".join(frame_bios_keys)
                         )
+                    if checkpoint_spec.resume_command == "f5":
+                        session.resume()
+                    else:
+                        session.send_line("VRT")
+                    _, prompt_count = session.wait_for_prompt(prompt_count, timeout_seconds)
+                    if not breakpoints_resolved:
+                        current_registers = capture_register_snapshot(session)
+                        if current_registers["cs"] != 0xF000:
+                            breakpoints = resolve_breakpoints_for_registers(
+                                unresolved_breakpoints,
+                                current_registers,
+                            )
+                            for breakpoint in breakpoints:
+                                session.send_line(f"BP {breakpoint.address}")
+                            breakpoints_resolved = True
+                            notes.append(
+                                f"Resolved EXE-relative breakpoints against runtime CS "
+                                f"`{current_registers['cs']:04X}` during checkpoint "
+                                f"`{checkpoint_spec.name or hit_index}` frame step `{frame_index}`."
+                            )
+            else:
+                if checkpoint_spec.bios_keys:
+                    preload_bios_keyboard_buffer(session, checkpoint_spec.bios_keys)
+                    notes.append(
+                        f"Preloaded the BIOS keyboard buffer for checkpoint "
+                        f"`{checkpoint_spec.name or hit_index}` with: "
+                        + ", ".join(checkpoint_spec.bios_keys)
+                    )
+                for _ in range(checkpoint_spec.repeat_count):
+                    if checkpoint_spec.resume_command == "f5":
+                        session.resume()
+                    else:
+                        session.send_line("VRT")
+                    _, prompt_count = session.wait_for_prompt(prompt_count, timeout_seconds)
+                    if not breakpoints_resolved:
+                        current_registers = capture_register_snapshot(session)
+                        if current_registers["cs"] != 0xF000:
+                            breakpoints = resolve_breakpoints_for_registers(unresolved_breakpoints, current_registers)
+                            for breakpoint in breakpoints:
+                                session.send_line(f"BP {breakpoint.address}")
+                            breakpoints_resolved = True
+                            notes.append(
+                                f"Resolved EXE-relative breakpoints against runtime CS `{current_registers['cs']:04X}` "
+                                f"during checkpoint `{checkpoint_spec.name or hit_index}`."
+                            )
 
             checkpoints.append(
                 capture_checkpoint(
@@ -1287,6 +1841,16 @@ def main() -> int:
                     notes,
                 )
             )
+            phase_markers.append(
+                make_phase_marker(
+                    session,
+                    checkpoint_spec.name or str(hit_index),
+                    "checkpoint",
+                    "captured",
+                )
+            )
+            active_phase_name = None
+            active_phase_kind = None
 
         if key_thread is not None:
             key_thread.stop()
@@ -1309,6 +1873,10 @@ def main() -> int:
                 )
     except Exception as exc:
         run_error = exc
+        if active_phase_name is not None and active_phase_kind is not None:
+            phase_markers.append(
+                make_phase_marker(session, active_phase_name, active_phase_kind, "failed")
+            )
         notes.append(f"Capture run failed: {exc}")
         if key_thread is not None and key_thread.errors:
             notes.extend(f"Automatic key input failed: {error}" for error in key_thread.errors)
@@ -1324,12 +1892,35 @@ def main() -> int:
             key_thread.join(timeout=1)
         session.stop()
 
+    file_trace = parse_file_trace(session.raw_log_path)
+    if file_trace is not None:
+        file_trace["phase_summaries"] = build_phase_file_trace(file_trace, phase_markers)
+        startup_sequence = file_trace.get("startup_sequence")
+        if isinstance(startup_sequence, list) and startup_sequence:
+            last_startup_file = startup_sequence[-1]
+            notes.append(
+                f"Observed {len(startup_sequence)} unique game-side file open(s); "
+                f"last first-open was `{last_startup_file['name']}` at log line "
+                f"`{last_startup_file['open_line']}`."
+            )
+        phase_summaries = file_trace.get("phase_summaries")
+        if isinstance(phase_summaries, list):
+            for phase in phase_summaries:
+                if phase["status"] != "failed" or not phase["opened_files"]:
+                    continue
+                opened = ", ".join(phase["opened_files"])
+                notes.append(
+                    f"During failed {phase['kind']} `{phase['name']}`, new game-side file opens were: {opened}."
+                )
+                break
+
     summary = {
         "preset": preset.name,
         "source_root": str(source_root),
         "output_root": str(output_root),
         "dosbox": str(dosbox),
         "key_backend": key_backend or "none",
+        "launch_input_backend": launch_input_backend,
         "screenshot_backend": screenshot_backend or "none",
         "cycles": args.cycles,
         "time_limit_seconds": args.time_limit,
@@ -1353,8 +1944,30 @@ def main() -> int:
             for item in breakpoints
         ],
         "debugger_commands": list(args.debugger_command),
+        "pre_launch_commands": list(pre_launch_commands),
         "resume_command": args.resume_command,
+        "guest_launch_sequence": (
+            {
+                "events": [
+                    {
+                        "delay_seconds": event.delay_seconds,
+                        "key_name": event.key_name,
+                    }
+                    for event in guest_launch_sequence.events
+                ],
+                "shell_commands": list(pre_launch_commands),
+            }
+            if guest_launch_sequence is not None
+            else None
+        ),
         "bios_keys": list(bios_keys),
+        "auto_keys": [
+            {
+                "delay_seconds": event.delay_seconds,
+                "key_name": event.key_name,
+            }
+            for event in auto_keys
+        ],
         "warmup_vrt_count": warmup_vrt_count,
         "stages": [
             {
@@ -1368,6 +1981,7 @@ def main() -> int:
             for stage in stages
         ],
         "stage_screenshots": stage_screenshots,
+        "phase_markers": phase_markers,
         "dumps": [
             {
                 "name": item.name,
@@ -1376,6 +1990,7 @@ def main() -> int:
             }
             for item in dumps
         ],
+        "file_trace": file_trace,
         "checkpoints": checkpoints,
         "fixture_bundles": fixture_bundles,
         "notes": notes,
