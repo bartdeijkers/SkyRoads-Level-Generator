@@ -13,7 +13,10 @@ use skyroads_core::{
     AttractModeApp, AudioCommand, ControlMode, ControllerState, DisplayMode, DisplaySettings,
     RenderScene, ShipState,
 };
-use skyroads_data::{levels_from_roads_archive, load_demo_rec_path, load_roads_lzs_path};
+use skyroads_data::{
+    levels_from_roads_archive, load_cfg_or_default, load_demo_rec_path, load_roads_lzs_path,
+    save_cfg_path, SkyroadsCfg,
+};
 use skyroads_renderer_ref::{AttractModeAssets, DebugViewMode, ReferenceRenderer};
 
 type Result<T> = std::result::Result<T, String>;
@@ -70,7 +73,8 @@ enum AutomationMode {
 struct GameplaySmokeAutomation {
     total_ticks: usize,
     sent_intro_skip: bool,
-    sent_start: bool,
+    sent_go_menu_open: bool,
+    sent_level_start: bool,
     gameplay_ticks: usize,
     saw_throttle: bool,
 }
@@ -153,8 +157,15 @@ impl GameplaySmokeAutomation {
                     ..AppInput::default()
                 }
             }
-            AppMode::MainMenu if self.sent_intro_skip && !self.sent_start => {
-                self.sent_start = true;
+            AppMode::MainMenu if self.sent_intro_skip && !self.sent_go_menu_open => {
+                self.sent_go_menu_open = true;
+                AppInput {
+                    enter: true,
+                    ..AppInput::default()
+                }
+            }
+            AppMode::GoMenu if self.sent_go_menu_open && !self.sent_level_start => {
+                self.sent_level_start = true;
                 AppInput {
                     enter: true,
                     ..AppInput::default()
@@ -241,6 +252,9 @@ fn run() -> Result<()> {
         .map_err(|error| error.to_string())?;
     let mut audio_mixer = AudioMixer::new(audio_assets);
     let mut app = AttractModeApp::new(levels, demo);
+    let cfg_path = config.source_root.join("SKYROADS.CFG");
+    let mut last_saved_cfg = load_cfg_or_default(&cfg_path).map_err(|error| error.to_string())?;
+    app.apply_cfg(&last_saved_cfg);
     app.set_display_settings(config.display_settings);
 
     let sdl = Sdl::init()?;
@@ -275,6 +289,8 @@ fn run() -> Result<()> {
             &texture,
             &reference_renderer,
             &mut app,
+            &cfg_path,
+            &mut last_saved_cfg,
             &mut audio_mixer,
             &audio_device,
             current_mode,
@@ -342,6 +358,7 @@ fn run() -> Result<()> {
             };
             let tick = app.tick(app_input);
             apply_audio_commands(&mut audio_mixer, &audio_device, &tick.audio_commands)?;
+            sync_cfg_if_changed(&cfg_path, &mut last_saved_cfg, &app)?;
             if tick.mode != current_mode {
                 current_mode = tick.mode;
                 window.set_title(&window_title(current_mode, debug_view))?;
@@ -395,6 +412,8 @@ fn run_gameplay_smoke(
     texture: &Texture,
     renderer: &ReferenceRenderer,
     app: &mut AttractModeApp,
+    cfg_path: &Path,
+    last_saved_cfg: &mut SkyroadsCfg,
     audio_mixer: &mut AudioMixer,
     audio_device: &AudioDevice,
     mut current_mode: AppMode,
@@ -420,6 +439,7 @@ fn run_gameplay_smoke(
         let input = smoke.next_input(current_mode);
         let tick = app.tick(input);
         apply_audio_commands(audio_mixer, audio_device, &tick.audio_commands)?;
+        sync_cfg_if_changed(cfg_path, last_saved_cfg, app)?;
         if tick.mode != current_mode {
             current_mode = tick.mode;
             window.set_title(&window_title(current_mode, DebugViewMode::Off))?;
@@ -474,6 +494,20 @@ fn apply_audio_commands(
     fill_audio_queue(audio_device, mixer)
 }
 
+fn sync_cfg_if_changed(
+    cfg_path: &Path,
+    last_saved_cfg: &mut SkyroadsCfg,
+    app: &AttractModeApp,
+) -> Result<()> {
+    let cfg = app.cfg_snapshot();
+    if cfg == *last_saved_cfg {
+        return Ok(());
+    }
+    save_cfg_path(cfg_path, &cfg).map_err(|error| error.to_string())?;
+    *last_saved_cfg = cfg;
+    Ok(())
+}
+
 fn fill_audio_queue(audio_device: &AudioDevice, mixer: &mut AudioMixer) -> Result<()> {
     let queued = audio_device.queued_samples();
     if queued >= AUDIO_QUEUE_LOW_WATER_SAMPLES {
@@ -524,13 +558,13 @@ fn print_controls(source_root: &Path) {
     println!("SkyRoads native attract-mode demo");
     println!("assets: {}", source_root.display());
     println!("controls:");
-    println!("  Up / Down  menu navigation, settings menu, keyboard throttle/brake");
-    println!("  Left / Right  steer, settings menu");
-    println!("  Enter      select, restart after crash/win");
-    println!("  Space      skip intro, jump, restart after crash/win");
+    println!("  Up / Down  menu navigation, level select, settings menu, keyboard throttle/brake");
+    println!("  Left / Right  steer, level select, settings menu");
+    println!("  Enter      select, start level, retry after crash, return after win");
+    println!("  Space      skip intro, start level, jump, retry after crash, return after win");
     println!("  Shift+Enter toggle fullscreen on/off");
     println!("  Tab        cycle debug views");
-    println!("  Escape     back to menu");
+    println!("  Escape     back to previous menu, exit gameplay to level select");
     println!("  Q          quit");
     println!("settings menu modes:");
     println!("  keyboard   arrow keys + enter/space");
@@ -553,7 +587,7 @@ fn window_title(mode: AppMode, debug_view: DebugViewMode) -> String {
         AppMode::SettingsMenu => "Settings",
         AppMode::DemoPlayback => "Demo",
         AppMode::Boot => "Boot",
-        AppMode::GoMenu => "Go",
+        AppMode::GoMenu => "Level Select",
         AppMode::Gameplay => "Gameplay",
     };
     if debug_view == DebugViewMode::Off {

@@ -310,6 +310,35 @@ def road0_gameplay_scenario_preset(
     )
 
 
+def gomenu_vrt_scan_preset(
+    name: str,
+    description: str,
+    checkpoint_name: str,
+    *,
+    checkpoint_bios_keys: tuple[str, ...] = (),
+) -> OraclePreset:
+    return OraclePreset(
+        name=name,
+        description=description,
+        breakpoints=(),
+        dumps=(),
+        bios_keys=ROAD0_INITIAL_FRAME.bios_keys,
+        guest_launch_sequence=ROAD0_MENU_LAUNCH_ADDKEY,
+        guest_launch_uses_bios_keys=True,
+        guest_launch_uses_stages=True,
+        auto_keys=ROAD0_MENU_LAUNCH_AUTO_KEYS,
+        warmup_vrt_count=ROAD0_INITIAL_FRAME.warmup_vrt_count,
+        stages=ROAD0_INITIAL_FRAME.stages[:-1],
+        checkpoints=(
+            CheckpointSpec(
+                name=checkpoint_name,
+                resume_command="vrt",
+                bios_keys=checkpoint_bios_keys,
+            ),
+        ),
+    )
+
+
 ROAD0_STEADY_NEUTRAL = road0_gameplay_scenario_preset(
     name="road0-steady-neutral",
     description=(
@@ -367,6 +396,35 @@ ROAD0_FIRST_AIRBORNE = road0_gameplay_scenario_preset(
     ),
 )
 
+GOMENU_DEFAULT_SELECTION = gomenu_vrt_scan_preset(
+    name="gomenu-default-selection",
+    description=(
+        "Skip the intro, stop in GoMenu after the Start press, and capture the default "
+        "level-selection state before confirming a road."
+    ),
+    checkpoint_name="default-selection",
+)
+
+GOMENU_RIGHT_SELECTION = gomenu_vrt_scan_preset(
+    name="gomenu-right-selection",
+    description=(
+        "Skip the intro, stop in GoMenu, inject a Right-arrow BIOS key, and capture the "
+        "level-selection state one VRT later."
+    ),
+    checkpoint_name="right-selection",
+    checkpoint_bios_keys=("right",),
+)
+
+GOMENU_DOWN_SELECTION = gomenu_vrt_scan_preset(
+    name="gomenu-down-selection",
+    description=(
+        "Skip the intro, stop in GoMenu, inject a Down-arrow BIOS key, and capture the "
+        "level-selection state one VRT later."
+    ),
+    checkpoint_name="down-selection",
+    checkpoint_bios_keys=("down",),
+)
+
 PRESETS = {
     ROAD0_INITIAL_FRAME.name: ROAD0_INITIAL_FRAME,
     "road0-direct-preload": OraclePreset(
@@ -418,6 +476,9 @@ PRESETS = {
             first_bios_keys=("return",),
         ),
     ),
+    GOMENU_DEFAULT_SELECTION.name: GOMENU_DEFAULT_SELECTION,
+    GOMENU_RIGHT_SELECTION.name: GOMENU_RIGHT_SELECTION,
+    GOMENU_DOWN_SELECTION.name: GOMENU_DOWN_SELECTION,
     ROAD0_STEADY_NEUTRAL.name: ROAD0_STEADY_NEUTRAL,
     ROAD0_SUSTAINED_THROTTLE.name: ROAD0_SUSTAINED_THROTTLE,
     ROAD0_STEADY_LEFT.name: ROAD0_STEADY_LEFT,

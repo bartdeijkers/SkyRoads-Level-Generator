@@ -191,6 +191,32 @@ class SkyroadsDosOracleTests(unittest.TestCase):
             ["after_first_space", "queue_second_space", "wait_for_menu", "queue_start_press"],
         )
 
+    def test_gomenu_selection_presets_stop_before_gameplay_and_encode_arrow_keys(self) -> None:
+        default = PRESETS["gomenu-default-selection"]
+        right = PRESETS["gomenu-right-selection"]
+        down = PRESETS["gomenu-down-selection"]
+
+        self.assertEqual(default.breakpoints, ())
+        self.assertEqual(default.dumps, ())
+        self.assertEqual(default.checkpoints[0].resume_command, "vrt")
+        self.assertEqual(default.checkpoints[0].bios_keys, ())
+        self.assertEqual(right.checkpoints[0].bios_keys, ("right",))
+        self.assertEqual(down.checkpoints[0].bios_keys, ("down",))
+
+        plan = build_launch_plan(
+            right,
+            key_backend="powershell",
+            no_auto_keys=False,
+            no_bios_keys=False,
+            no_stages=False,
+        )
+        self.assertEqual(plan.launch_input_backend, "guest-addkey")
+        self.assertEqual(plan.bios_keys, ("space",))
+        self.assertEqual(
+            [stage.name for stage in plan.stages],
+            ["after_first_space", "queue_second_space", "wait_for_menu", "queue_start_press"],
+        )
+
     def test_parse_file_trace_keeps_relevant_startup_sequence_and_duplicate_open_events(self) -> None:
         raw_log = "\n".join(
             [

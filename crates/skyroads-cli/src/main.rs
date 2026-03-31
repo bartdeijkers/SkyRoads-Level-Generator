@@ -952,8 +952,22 @@ fn enter_demo_playback(app: &mut AttractModeApp) -> Result<skyroads_core::DemoPl
     Ok(scene)
 }
 
+fn open_go_menu(app: &mut AttractModeApp) -> Result<()> {
+    let tick = app.tick(AppInput {
+        enter: true,
+        ..AppInput::default()
+    });
+    if !matches!(tick.render_scene, RenderScene::GoMenu(_)) {
+        return Err(Error::invalid_format(
+            "expected go menu render scene after opening level select",
+        ));
+    }
+    Ok(())
+}
+
 fn enter_gameplay(app: &mut AttractModeApp) -> Result<skyroads_core::DemoPlaybackState> {
     skip_intro_to_menu(app);
+    open_go_menu(app)?;
     let tick = app.tick(AppInput {
         enter: true,
         ..AppInput::default()

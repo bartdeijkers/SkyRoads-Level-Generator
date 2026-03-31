@@ -1,8 +1,9 @@
 use std::path::Path;
 
 use skyroads_core::{
-    renderer_row_state, ControlMode, DemoPlaybackState, HelpMenuScene, IntroSequenceState,
-    MainMenuScene, RenderScene, RoadRenderRow, SettingsMenuCursor, SettingsMenuScene,
+    renderer_row_state, ControlMode, DemoPlaybackState, GoMenuScene, HelpMenuScene,
+    IntroSequenceState, MainMenuScene, RenderScene, RoadRenderRow, SettingsMenuCursor,
+    SettingsMenuScene,
 };
 use skyroads_data::{
     load_dashboard_dat_path, load_image_archive_path, load_trekdat_lzs_path,
@@ -46,6 +47,24 @@ const SETTINGS_WIDGET_WIDTH: i32 = 86;
 const SETTINGS_WIDGET_HEIGHT: i32 = 22;
 const SETTINGS_WIDGET_STATUS_WIDTH: i32 = 28;
 const SETTINGS_WIDGET_STATUS_HEIGHT: i32 = 10;
+const GO_MENU_WORLD_ROW_TOPS: [i32; 5] = [12, 51, 90, 129, 168];
+const GO_MENU_ROAD_LINE_OFFSETS: [i32; 3] = [1, 10, 19];
+const GO_MENU_THUMBNAIL_X: [i32; 2] = [8, 168];
+const GO_MENU_THUMBNAIL_WIDTH: i32 = 52;
+const GO_MENU_THUMBNAIL_HEIGHT: i32 = 27;
+const GO_MENU_LABEL_X: [i32; 2] = [64, 224];
+const GO_MENU_LABEL_WIDTH: i32 = 45;
+const GO_MENU_PIP_OFFSET_X: i32 = GO_MENU_LABEL_WIDTH + 2;
+const GO_MENU_PIP_SPACING: i32 = 7;
+const GO_MENU_VISIBLE_PIP_LIMIT: usize = 7;
+const PLAY_STATUS_PANEL_X: i32 = 88;
+const PLAY_STATUS_PANEL_Y: i32 = 24;
+const PLAY_STATUS_PANEL_W: i32 = 144;
+const PLAY_STATUS_PANEL_H: i32 = 28;
+const PLAY_STATUS_PANEL_BG: RgbColor = RgbColor::new(10, 16, 34);
+const PLAY_STATUS_PANEL_OUTLINE: RgbColor = RgbColor::new(76, 86, 120);
+const GO_MENU_SELECTION_COLOR: RgbColor = RgbColor::new(255, 185, 64);
+const GO_MENU_SELECTION_OUTLINE: RgbColor = RgbColor::new(255, 255, 255);
 
 const SETTINGS_CURSOR_WHITE: RgbColor = RgbColor::new(218, 218, 218);
 const SETTINGS_SELECTED_ORANGE: RgbColor = RgbColor::new(255, 80, 0);
@@ -371,6 +390,7 @@ impl ReferenceRenderer {
             RenderScene::Intro(scene) => self.render_intro(&mut frame, scene),
             RenderScene::MainMenu(scene) => self.render_main_menu(&mut frame, scene),
             RenderScene::HelpMenu(scene) => self.render_help_menu(&mut frame, scene),
+            RenderScene::GoMenu(scene) => self.render_go_menu(&mut frame, scene),
             RenderScene::SettingsMenu(scene) => self.render_settings_menu(&mut frame, scene),
             RenderScene::DemoPlayback(scene) => {
                 self.render_play_scene_with_debug(&mut frame, scene, debug_view)
@@ -471,6 +491,13 @@ impl ReferenceRenderer {
         );
     }
 
+    fn render_go_menu(&self, frame: &mut FrameBuffer320x200, scene: &GoMenuScene) {
+        frame.clear(RgbColor::new(0, 0, 0));
+        self.draw_archive_frame(frame, &self.assets.go_menu, 0, 1.0, 1.0);
+        self.draw_go_menu_completion_pips(frame, scene);
+        self.draw_go_menu_selection(frame, scene);
+    }
+
     fn render_play_scene(&self, frame: &mut FrameBuffer320x200, scene: &DemoPlaybackState) {
         let ship_visual = derive_ship_visual_state(scene, &self.assets.dos_ship_tables);
         let road_coverage = self.build_dos_road_coverage_frame(scene);
@@ -507,9 +534,9 @@ impl ReferenceRenderer {
         let speed = scene.snapshot.z_velocity / (0x2AAA as f64 / 0x10000 as f64);
         self.draw_gauge(&mut *frame, &self.assets.speed_gauge, speed);
         if scene.did_win {
-            self.draw_archive_frame(frame, &self.assets.go_menu, 1, 1.0, 1.0);
+            self.draw_play_status_overlay(frame, "LEVEL CLEAR", "ENTER FOR MENU");
         } else if should_draw_game_over_overlay(scene) {
-            self.draw_archive_frame(frame, &self.assets.go_menu, 0, 1.0, 1.0);
+            self.draw_play_status_overlay(frame, "CRASHED", "ENTER TO RETRY");
         }
     }
 
@@ -550,6 +577,105 @@ impl ReferenceRenderer {
             return;
         };
         let _ = draw_dos_trekdat_pass(frame, scene, record, DosRoadPhase::AfterShip);
+    }
+
+    fn draw_go_menu_completion_pips(&self, frame: &mut FrameBuffer320x200, scene: &GoMenuScene) {
+        for (completion_index, count) in scene.completion_counts.iter().copied().enumerate() {
+            if count == 0 {
+                continue;
+            }
+
+            let world_index = completion_index / GO_MENU_ROAD_LINE_OFFSETS.len();
+            let road_index_in_world = completion_index % GO_MENU_ROAD_LINE_OFFSETS.len();
+            let world_column = world_index / GO_MENU_WORLD_ROW_TOPS.len();
+            let world_row = world_index % GO_MENU_WORLD_ROW_TOPS.len();
+            let pip_y =
+                GO_MENU_WORLD_ROW_TOPS[world_row] + GO_MENU_ROAD_LINE_OFFSETS[road_index_in_world];
+            let pip_x = GO_MENU_LABEL_X[world_column] + GO_MENU_PIP_OFFSET_X;
+            let pip_count = usize::from(count).min(GO_MENU_VISIBLE_PIP_LIMIT);
+
+            for pip_index in 0..pip_count {
+                self.draw_archive_frame_at(
+                    frame,
+                    &self.assets.go_menu,
+                    1,
+                    pip_x + (pip_index as i32 * GO_MENU_PIP_SPACING),
+                    pip_y,
+                );
+            }
+        }
+    }
+
+    fn draw_go_menu_selection(&self, frame: &mut FrameBuffer320x200, scene: &GoMenuScene) {
+        let selection = scene.selection;
+        let world_column = selection.world_index / GO_MENU_WORLD_ROW_TOPS.len();
+        let world_row = selection.world_index % GO_MENU_WORLD_ROW_TOPS.len();
+
+        let thumb_x = GO_MENU_THUMBNAIL_X[world_column];
+        let thumb_y = GO_MENU_WORLD_ROW_TOPS[world_row];
+        frame.stroke_rect(
+            thumb_x - 2,
+            thumb_y - 2,
+            GO_MENU_THUMBNAIL_WIDTH + 4,
+            GO_MENU_THUMBNAIL_HEIGHT + 4,
+            GO_MENU_SELECTION_OUTLINE,
+        );
+        frame.stroke_rect(
+            thumb_x - 1,
+            thumb_y - 1,
+            GO_MENU_THUMBNAIL_WIDTH + 2,
+            GO_MENU_THUMBNAIL_HEIGHT + 2,
+            GO_MENU_SELECTION_COLOR,
+        );
+
+        let label_x = GO_MENU_LABEL_X[world_column];
+        let label_y =
+            GO_MENU_WORLD_ROW_TOPS[world_row] + GO_MENU_ROAD_LINE_OFFSETS[selection.road_index_in_world] - 1;
+        frame.stroke_rect(
+            label_x - 3,
+            label_y - 1,
+            GO_MENU_LABEL_WIDTH + 6,
+            9,
+            GO_MENU_SELECTION_OUTLINE,
+        );
+        frame.stroke_rect(
+            label_x - 2,
+            label_y,
+            GO_MENU_LABEL_WIDTH + 4,
+            7,
+            GO_MENU_SELECTION_COLOR,
+        );
+    }
+
+    fn draw_play_status_overlay(&self, frame: &mut FrameBuffer320x200, title: &str, prompt: &str) {
+        frame.fill_rect(
+            PLAY_STATUS_PANEL_X,
+            PLAY_STATUS_PANEL_Y,
+            PLAY_STATUS_PANEL_W,
+            PLAY_STATUS_PANEL_H,
+            PLAY_STATUS_PANEL_BG,
+        );
+        frame.stroke_rect(
+            PLAY_STATUS_PANEL_X,
+            PLAY_STATUS_PANEL_Y,
+            PLAY_STATUS_PANEL_W,
+            PLAY_STATUS_PANEL_H,
+            PLAY_STATUS_PANEL_OUTLINE,
+        );
+        self.draw_text_centered(
+            frame,
+            title,
+            PLAY_STATUS_PANEL_Y + 4,
+            GO_MENU_SELECTION_COLOR,
+            2,
+        );
+        self.draw_text_centered(
+            frame,
+            prompt,
+            PLAY_STATUS_PANEL_Y + 17,
+            SETTINGS_CURSOR_WHITE,
+            1,
+        );
     }
 
     fn build_dos_road_coverage_frame(
@@ -638,6 +764,41 @@ impl ReferenceRenderer {
         }
     }
 
+    fn draw_archive_frame_at(
+        &self,
+        frame: &mut FrameBuffer320x200,
+        archive: &ImageArchive,
+        frame_index: usize,
+        dest_x: i32,
+        dest_y: i32,
+    ) {
+        let Some(fragments) = archive.frames.get(frame_index) else {
+            return;
+        };
+        let Some(origin_x) = fragments
+            .iter()
+            .map(|fragment| i32::from(fragment.x_offset))
+            .min()
+        else {
+            return;
+        };
+        let Some(origin_y) = fragments
+            .iter()
+            .map(|fragment| i32::from(fragment.y_offset))
+            .min()
+        else {
+            return;
+        };
+        for fragment in fragments {
+            self.draw_fragment_at(
+                frame,
+                fragment,
+                dest_x + i32::from(fragment.x_offset) - origin_x,
+                dest_y + i32::from(fragment.y_offset) - origin_y,
+            );
+        }
+    }
+
     fn draw_archive_frame_reveal(
         &self,
         frame: &mut FrameBuffer320x200,
@@ -687,6 +848,32 @@ impl ReferenceRenderer {
                     color,
                     alpha,
                 );
+            }
+        }
+    }
+
+    fn draw_fragment_at(
+        &self,
+        frame: &mut FrameBuffer320x200,
+        fragment: &ImageFrame,
+        dest_x: i32,
+        dest_y: i32,
+    ) {
+        for y in 0..usize::from(fragment.height) {
+            for x in 0..usize::from(fragment.width) {
+                let pixel_index = fragment.pixels[y * usize::from(fragment.width) + x];
+                if fragment.transparent_zero && pixel_index == 0 {
+                    continue;
+                }
+                let Some(color) = fragment.palette.colors.get(pixel_index as usize).copied() else {
+                    continue;
+                };
+                let px = dest_x + x as i32;
+                let py = dest_y + y as i32;
+                if px < 0 || py < 0 {
+                    continue;
+                }
+                frame.set_pixel(px as usize, py as usize, color);
             }
         }
     }
@@ -2798,8 +2985,8 @@ mod tests {
     use std::path::PathBuf;
 
     use skyroads_core::{
-        AppInput, AttractModeApp, ControlMode, DisplaySettings, RenderScene, SettingsMenuCursor,
-        SettingsMenuScene,
+        AppInput, AttractModeApp, ControlMode, DisplaySettings, GoMenuScene, GoMenuSelection,
+        RenderScene, SettingsMenuCursor, SettingsMenuScene,
     };
     use skyroads_data::{
         level_from_road_entry, load_demo_rec_path, load_roads_lzs_path,
@@ -2813,6 +3000,7 @@ mod tests {
         DosShipPipeline, FrameBuffer320x200, ReferenceRenderer, ShipScreenPlacement,
         ShipSpriteKind, DOS_EXPLOSION_ANIMATION_TICKS, DOS_NON_ALIVE_ANIMATION_TICKS,
         DOS_SHIP_CLIP_MASK_BYTES, DOS_SHIP_SHADOW_MASK_HEIGHT, DOS_SHIP_SHADOW_MASK_WIDTH,
+        GO_MENU_SELECTION_COLOR, GO_MENU_SELECTION_OUTLINE,
     };
 
     #[derive(Debug, Clone, Copy)]
@@ -2851,7 +3039,7 @@ mod tests {
         AttractModeApp::new(levels, demo)
     }
 
-    fn enter_gameplay(app: &mut AttractModeApp) {
+    fn skip_intro_to_main_menu(app: &mut AttractModeApp) {
         for _ in 0..35 {
             app.tick(AppInput::default());
         }
@@ -2859,6 +3047,19 @@ mod tests {
             space: true,
             ..AppInput::default()
         });
+    }
+
+    fn open_go_menu(app: &mut AttractModeApp) {
+        let tick = app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        });
+        assert!(matches!(tick.render_scene, RenderScene::GoMenu(_)));
+    }
+
+    fn enter_gameplay(app: &mut AttractModeApp) {
+        skip_intro_to_main_menu(app);
+        open_go_menu(app);
         let tick = app.tick(AppInput {
             enter: true,
             ..AppInput::default()
@@ -2867,18 +3068,19 @@ mod tests {
     }
 
     fn enter_demo_playback(app: &mut AttractModeApp) {
-        for _ in 0..35 {
-            app.tick(AppInput::default());
-        }
-        app.tick(AppInput {
-            space: true,
-            ..AppInput::default()
-        });
+        skip_intro_to_main_menu(app);
         for _ in 0..(70 * 5) {
             app.tick(AppInput::default());
         }
         let tick = app.tick(AppInput::default());
         assert!(matches!(tick.render_scene, RenderScene::DemoPlayback(_)));
+    }
+
+    fn go_menu_scene(selection: GoMenuSelection) -> GoMenuScene {
+        GoMenuScene {
+            selection,
+            completion_counts: [0; 30],
+        }
     }
 
     fn gameplay_scene_after_steps(
@@ -2990,6 +3192,28 @@ mod tests {
         found.then_some((min_x, min_y, max_x, max_y))
     }
 
+    fn frame_pixel(frame: &FrameBuffer320x200, x: usize, y: usize) -> RgbColor {
+        let offset = (y * usize::from(frame.width) + x) * 4;
+        RgbColor::new(
+            frame.pixels_rgba[offset],
+            frame.pixels_rgba[offset + 1],
+            frame.pixels_rgba[offset + 2],
+        )
+    }
+
+    fn frame_region_differs(
+        left: &FrameBuffer320x200,
+        right: &FrameBuffer320x200,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+    ) -> bool {
+        (y..y + height).any(|yy| {
+            (x..x + width).any(|xx| frame_pixel(left, xx, yy) != frame_pixel(right, xx, yy))
+        })
+    }
+
     #[test]
     fn attract_assets_load() {
         let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
@@ -2999,6 +3223,58 @@ mod tests {
         assert_eq!(assets.help_menu.frame_count(), 3);
         assert_eq!(assets.worlds.len(), 10);
         assert_eq!(assets.trekdat.record_count(), 8);
+    }
+
+    #[test]
+    fn go_menu_default_selection_draws_visible_selection_border() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+        let frame = renderer.render_scene(&RenderScene::GoMenu(go_menu_scene(
+            GoMenuSelection::from_road_index(1),
+        )));
+
+        assert_eq!(frame_pixel(&frame, 6, 10), GO_MENU_SELECTION_OUTLINE);
+        assert_eq!(frame_pixel(&frame, 7, 11), GO_MENU_SELECTION_COLOR);
+        assert_eq!(frame_pixel(&frame, 61, 10), GO_MENU_SELECTION_OUTLINE);
+        assert_eq!(frame_pixel(&frame, 60, 11), GO_MENU_SELECTION_COLOR);
+    }
+
+    #[test]
+    fn go_menu_completion_pip_changes_frame_at_expected_anchor() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+        let base = renderer.render_scene(&RenderScene::GoMenu(go_menu_scene(
+            GoMenuSelection::from_road_index(1),
+        )));
+        let mut scene = go_menu_scene(GoMenuSelection::from_road_index(1));
+        scene.completion_counts[0] = 1;
+        let with_completion = renderer.render_scene(&RenderScene::GoMenu(scene));
+
+        assert_ne!(frame_hash(&base), frame_hash(&with_completion));
+        assert!(frame_region_differs(&base, &with_completion, 111, 13, 6, 5));
+    }
+
+    #[test]
+    fn go_menu_selection_moves_change_render_hash_and_target_column() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+        let default_frame = renderer.render_scene(&RenderScene::GoMenu(go_menu_scene(
+            GoMenuSelection::from_road_index(1),
+        )));
+        let right_frame = renderer.render_scene(&RenderScene::GoMenu(go_menu_scene(
+            GoMenuSelection::from_road_index(16),
+        )));
+        let down_frame = renderer.render_scene(&RenderScene::GoMenu(go_menu_scene(
+            GoMenuSelection::from_road_index(2),
+        )));
+
+        assert_ne!(frame_hash(&default_frame), frame_hash(&right_frame));
+        assert_ne!(frame_hash(&default_frame), frame_hash(&down_frame));
+        assert_eq!(
+            frame_pixel(&right_frame, 166, 10),
+            GO_MENU_SELECTION_OUTLINE
+        );
+        assert_eq!(frame_pixel(&down_frame, 61, 19), GO_MENU_SELECTION_OUTLINE);
     }
 
     #[test]

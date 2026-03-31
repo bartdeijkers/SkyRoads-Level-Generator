@@ -12,7 +12,10 @@ mod shipped_runtime_tables;
 mod sound;
 mod trekdat;
 
-pub use cfg::{load_cfg_bytes, load_cfg_path, SkyroadsCfg};
+pub use cfg::{
+    load_cfg_bytes, load_cfg_or_default, load_cfg_path, save_cfg_path, ControlMode, SkyroadsCfg,
+    SKYROADS_CFG_COMPLETION_COUNT,
+};
 pub use compression::decompress_stream;
 pub use dashboard::{
     load_dashboard_dat_bytes, load_dashboard_dat_path, HudFragment, HudFragmentPack,

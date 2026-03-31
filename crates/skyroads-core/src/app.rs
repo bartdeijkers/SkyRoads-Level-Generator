@@ -1,4 +1,7 @@
-use skyroads_data::{DemoRecording, Level, LevelCell, ROAD_COLUMNS};
+use skyroads_data::{
+    ControlMode, DemoRecording, Level, LevelCell, SkyroadsCfg, ROAD_COLUMNS,
+    SKYROADS_CFG_COMPLETION_COUNT,
+};
 
 use crate::{sample_demo_input_for_ship, ControllerState, GameplayEvent, GameplaySession};
 
@@ -13,6 +16,12 @@ const RENDER_ROWS_AHEAD: usize = 7;
 const MENU_SONG_INDEX: u8 = 1;
 const GAMEPLAY_SONG_INDEX: u8 = 2;
 const DEMO_SONG_INDEX: u8 = 2;
+const DEMO_LEVEL_INDEX: usize = 0;
+const FIRST_PLAYABLE_LEVEL_INDEX: usize = 1;
+const GO_MENU_ROADS_PER_WORLD: usize = 3;
+const GO_MENU_WORLD_COUNT: usize = SKYROADS_CFG_COMPLETION_COUNT / GO_MENU_ROADS_PER_WORLD;
+const GO_MENU_WORLD_COLUMNS: usize = 2;
+const GO_MENU_WORLDS_PER_COLUMN: usize = GO_MENU_WORLD_COUNT / GO_MENU_WORLD_COLUMNS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppMode {
@@ -52,27 +61,91 @@ impl MenuCursor {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ControlMode {
-    Keyboard,
-    Joystick,
-    Mouse,
+pub struct GoMenuSelection {
+    pub world_index: usize,
+    pub road_index_in_world: usize,
+    pub road_index: usize,
 }
 
-impl ControlMode {
-    pub fn dos_value(self) -> u16 {
-        match self {
-            Self::Keyboard => 0,
-            Self::Joystick => 1,
-            Self::Mouse => 2,
+impl GoMenuSelection {
+    pub fn from_road_index(road_index: usize) -> Self {
+        assert!(
+            road_index >= FIRST_PLAYABLE_LEVEL_INDEX,
+            "GoMenu road index must point at a playable road"
+        );
+        let visible_index = road_index - FIRST_PLAYABLE_LEVEL_INDEX;
+        let world_index = visible_index / GO_MENU_ROADS_PER_WORLD;
+        let road_index_in_world = visible_index % GO_MENU_ROADS_PER_WORLD;
+        Self::new(world_index, road_index_in_world)
+    }
+
+    pub fn new(world_index: usize, road_index_in_world: usize) -> Self {
+        assert!(world_index < GO_MENU_WORLD_COUNT);
+        assert!(road_index_in_world < GO_MENU_ROADS_PER_WORLD);
+        let road_index = FIRST_PLAYABLE_LEVEL_INDEX
+            + world_index * GO_MENU_ROADS_PER_WORLD
+            + road_index_in_world;
+        Self {
+            world_index,
+            road_index_in_world,
+            road_index,
         }
     }
 
-    fn from_dos_value(value: u16) -> Self {
-        match value {
-            1 => Self::Joystick,
-            2 => Self::Mouse,
-            _ => Self::Keyboard,
+    pub fn world_column(self) -> usize {
+        self.world_index / GO_MENU_WORLDS_PER_COLUMN
+    }
+
+    pub fn world_row(self) -> usize {
+        self.world_index % GO_MENU_WORLDS_PER_COLUMN
+    }
+
+    fn move_in_direction(self, direction: GoMenuDirection) -> Self {
+        let mut world_column = self.world_column();
+        let mut world_row = self.world_row();
+        let mut road_index_in_world = self.road_index_in_world;
+
+        match direction {
+            GoMenuDirection::Left => {
+                world_column = world_column.saturating_sub(1);
+            }
+            GoMenuDirection::Right => {
+                world_column = (world_column + 1).min(GO_MENU_WORLD_COLUMNS - 1);
+            }
+            GoMenuDirection::Up => {
+                if road_index_in_world > 0 {
+                    road_index_in_world -= 1;
+                } else if world_row > 0 {
+                    world_row -= 1;
+                    road_index_in_world = GO_MENU_ROADS_PER_WORLD - 1;
+                }
+            }
+            GoMenuDirection::Down => {
+                if road_index_in_world + 1 < GO_MENU_ROADS_PER_WORLD {
+                    road_index_in_world += 1;
+                } else if world_row + 1 < GO_MENU_WORLDS_PER_COLUMN {
+                    world_row += 1;
+                    road_index_in_world = 0;
+                }
+            }
         }
+
+        let world_index = world_column * GO_MENU_WORLDS_PER_COLUMN + world_row;
+        Self::new(world_index, road_index_in_world)
+    }
+
+    pub fn completion_index(self) -> usize {
+        self.road_index - FIRST_PLAYABLE_LEVEL_INDEX
+    }
+
+    pub fn visible_index(self) -> usize {
+        self.completion_index()
+    }
+}
+
+impl Default for GoMenuSelection {
+    fn default() -> Self {
+        Self::new(0, 0)
     }
 }
 
@@ -215,6 +288,14 @@ enum SettingsNavDirection {
     Down,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GoMenuDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct AppInput {
     pub up: bool,
@@ -319,6 +400,12 @@ pub struct HelpMenuScene {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GoMenuScene {
+    pub selection: GoMenuSelection,
+    pub completion_counts: [u16; SKYROADS_CFG_COMPLETION_COUNT],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SettingsMenuScene {
     pub cursor: SettingsMenuCursor,
     pub control_mode: ControlMode,
@@ -332,6 +419,7 @@ pub enum RenderScene {
     Intro(IntroSequenceState),
     MainMenu(MainMenuScene),
     HelpMenu(HelpMenuScene),
+    GoMenu(GoMenuScene),
     SettingsMenu(SettingsMenuScene),
     DemoPlayback(DemoPlaybackState),
     Gameplay(DemoPlaybackState),
@@ -357,6 +445,9 @@ pub struct AttractModeApp {
     menu_idle_tick: usize,
     main_menu_cursor: MenuCursor,
     help_page: usize,
+    go_menu_selection: GoMenuSelection,
+    completion_counts: [u16; SKYROADS_CFG_COMPLETION_COUNT],
+    gameplay_win_recorded: bool,
     intro_song_started: bool,
     intro_sample_started: bool,
     menu_song_started: bool,
@@ -370,16 +461,20 @@ pub struct AttractModeApp {
 impl AttractModeApp {
     pub fn new(levels: Vec<Level>, demo_recording: DemoRecording) -> Self {
         assert!(
-            !levels.is_empty(),
-            "AttractModeApp requires at least one level"
+            levels.len() > FIRST_PLAYABLE_LEVEL_INDEX,
+            "AttractModeApp requires a demo road and at least one playable road"
         );
-        let demo_level_index = 0usize;
+        assert!(
+            levels.len() >= FIRST_PLAYABLE_LEVEL_INDEX + SKYROADS_CFG_COMPLETION_COUNT,
+            "AttractModeApp requires 30 playable roads for GoMenu"
+        );
+        let demo_level_index = DEMO_LEVEL_INDEX;
         let demo_session = GameplaySession::new(levels[demo_level_index].clone());
-        let gameplay_session = GameplaySession::new(levels[0].clone());
+        let gameplay_session = GameplaySession::new(levels[FIRST_PLAYABLE_LEVEL_INDEX].clone());
         Self {
             levels,
             mode: AppMode::Intro,
-            current_level_index: 0,
+            current_level_index: FIRST_PLAYABLE_LEVEL_INDEX,
             demo_level_index,
             demo_recording,
             demo_session,
@@ -388,6 +483,9 @@ impl AttractModeApp {
             menu_idle_tick: 0,
             main_menu_cursor: MenuCursor::Start,
             help_page: 0,
+            go_menu_selection: GoMenuSelection::default(),
+            completion_counts: [0; SKYROADS_CFG_COMPLETION_COUNT],
+            gameplay_win_recorded: false,
             intro_song_started: false,
             intro_sample_started: false,
             menu_song_started: false,
@@ -415,6 +513,22 @@ impl AttractModeApp {
         self.display_settings = settings;
     }
 
+    pub fn apply_cfg(&mut self, cfg: &SkyroadsCfg) {
+        self.control_mode = cfg.control_mode;
+        self.sound_fx_enabled = cfg.sound_enabled;
+        self.music_enabled = cfg.sound_enabled;
+        self.completion_counts = cfg.completion_counts;
+        self.settings_cursor = SettingsMenuCursor::from_control_mode(self.control_mode);
+    }
+
+    pub fn cfg_snapshot(&self) -> SkyroadsCfg {
+        SkyroadsCfg {
+            control_mode: self.control_mode,
+            sound_enabled: self.sound_fx_enabled || self.music_enabled,
+            completion_counts: self.completion_counts,
+        }
+    }
+
     pub fn tick(&mut self, input: AppInput) -> AppTickResult {
         let mut audio_commands = Vec::new();
         match self.mode {
@@ -422,9 +536,10 @@ impl AttractModeApp {
             AppMode::MainMenu => self.tick_main_menu(input, &mut audio_commands),
             AppMode::HelpMenu => self.tick_help_menu(input, &mut audio_commands),
             AppMode::SettingsMenu => self.tick_settings_menu(input, &mut audio_commands),
+            AppMode::GoMenu => self.tick_go_menu(input, &mut audio_commands),
             AppMode::DemoPlayback => self.tick_demo(input, &mut audio_commands),
             AppMode::Gameplay => self.tick_gameplay(input, &mut audio_commands),
-            AppMode::Boot | AppMode::GoMenu => {
+            AppMode::Boot => {
                 self.mode = AppMode::MainMenu;
             }
         }
@@ -479,7 +594,7 @@ impl AttractModeApp {
         if input.enter {
             self.menu_idle_tick = 0;
             match self.main_menu_cursor {
-                MenuCursor::Start => self.start_gameplay(audio_commands),
+                MenuCursor::Start => self.enter_go_menu(audio_commands),
                 MenuCursor::Config => self.enter_settings_menu(),
                 MenuCursor::Help => {
                     self.help_page = 0;
@@ -497,6 +612,37 @@ impl AttractModeApp {
 
         if self.menu_idle_tick >= MENU_IDLE_DEMO_TICKS {
             self.start_demo(audio_commands);
+        }
+    }
+
+    fn tick_go_menu(&mut self, input: AppInput, audio_commands: &mut Vec<AudioCommand>) {
+        if input.escape {
+            self.mode = AppMode::MainMenu;
+            self.menu_idle_tick = 0;
+            return;
+        }
+        if input.left {
+            self.go_menu_selection = self
+                .go_menu_selection
+                .move_in_direction(GoMenuDirection::Left);
+        }
+        if input.right {
+            self.go_menu_selection = self
+                .go_menu_selection
+                .move_in_direction(GoMenuDirection::Right);
+        }
+        if input.up {
+            self.go_menu_selection = self
+                .go_menu_selection
+                .move_in_direction(GoMenuDirection::Up);
+        }
+        if input.down {
+            self.go_menu_selection = self
+                .go_menu_selection
+                .move_in_direction(GoMenuDirection::Down);
+        }
+        if input.enter || input.space {
+            self.start_gameplay(audio_commands);
         }
     }
 
@@ -550,26 +696,30 @@ impl AttractModeApp {
 
     fn tick_demo(&mut self, input: AppInput, audio_commands: &mut Vec<AudioCommand>) {
         if input.escape || input.enter || input.space {
-            self.return_to_menu(audio_commands);
+            self.return_to_main_menu(audio_commands);
             return;
         }
         if sample_demo_input_for_ship(&self.demo_recording, self.demo_session.ship).is_none() {
-            self.return_to_menu(audio_commands);
+            self.return_to_main_menu(audio_commands);
             return;
         }
         self.demo_session.run_demo_frame(&self.demo_recording);
     }
 
     fn tick_gameplay(&mut self, input: AppInput, audio_commands: &mut Vec<AudioCommand>) {
+        if self.gameplay_session.did_win && !self.gameplay_win_recorded {
+            self.record_level_completion(self.current_level_index);
+            self.gameplay_win_recorded = true;
+        }
+
         if input.escape {
-            self.return_to_menu(audio_commands);
+            self.enter_go_menu(audio_commands);
             return;
         }
 
         if self.gameplay_session.did_win {
             if input.enter || input.space {
-                self.current_level_index = (self.current_level_index + 1) % self.levels.len();
-                self.start_gameplay(audio_commands);
+                self.enter_go_menu(audio_commands);
             }
             return;
         }
@@ -595,13 +745,17 @@ impl AttractModeApp {
         self.mode = AppMode::DemoPlayback;
         self.menu_idle_tick = 0;
         self.demo_session = GameplaySession::new(self.levels[self.demo_level_index].clone());
+        self.menu_song_started = false;
         audio_commands.push(AudioCommand::PlaySong(DEMO_SONG_INDEX));
     }
 
     fn start_gameplay(&mut self, audio_commands: &mut Vec<AudioCommand>) {
+        self.current_level_index = self.go_menu_selection.road_index;
         self.mode = AppMode::Gameplay;
         self.menu_idle_tick = 0;
         self.gameplay_session = GameplaySession::new(self.levels[self.current_level_index].clone());
+        self.gameplay_win_recorded = false;
+        self.menu_song_started = false;
         audio_commands.push(AudioCommand::PlaySong(GAMEPLAY_SONG_INDEX));
     }
 
@@ -614,13 +768,24 @@ impl AttractModeApp {
         self.menu_song_started = true;
     }
 
-    fn return_to_menu(&mut self, audio_commands: &mut Vec<AudioCommand>) {
+    fn enter_go_menu(&mut self, audio_commands: &mut Vec<AudioCommand>) {
+        self.mode = AppMode::GoMenu;
+        self.menu_idle_tick = 0;
+        self.go_menu_selection = GoMenuSelection::from_road_index(self.current_level_index);
+        if !self.menu_song_started {
+            audio_commands.push(AudioCommand::PlaySong(MENU_SONG_INDEX));
+            self.menu_song_started = true;
+        }
+    }
+
+    fn return_to_main_menu(&mut self, audio_commands: &mut Vec<AudioCommand>) {
         self.mode = AppMode::MainMenu;
         self.menu_idle_tick = 0;
         self.main_menu_cursor = MenuCursor::Start;
-        self.menu_song_started = false;
-        audio_commands.push(AudioCommand::PlaySong(MENU_SONG_INDEX));
-        self.menu_song_started = true;
+        if !self.menu_song_started {
+            audio_commands.push(AudioCommand::PlaySong(MENU_SONG_INDEX));
+            self.menu_song_started = true;
+        }
     }
 
     fn current_render_scene(&self) -> RenderScene {
@@ -632,6 +797,10 @@ impl AttractModeApp {
             AppMode::HelpMenu => RenderScene::HelpMenu(HelpMenuScene {
                 page_index: self.help_page,
             }),
+            AppMode::GoMenu => RenderScene::GoMenu(GoMenuScene {
+                selection: self.go_menu_selection,
+                completion_counts: self.completion_counts,
+            }),
             AppMode::SettingsMenu => RenderScene::SettingsMenu(SettingsMenuScene {
                 cursor: self.settings_cursor,
                 control_mode: self.control_mode,
@@ -641,7 +810,7 @@ impl AttractModeApp {
             }),
             AppMode::DemoPlayback => RenderScene::DemoPlayback(self.current_demo_scene()),
             AppMode::Gameplay => RenderScene::Gameplay(self.current_gameplay_scene()),
-            AppMode::Boot | AppMode::GoMenu => RenderScene::MainMenu(MainMenuScene {
+            AppMode::Boot => RenderScene::MainMenu(MainMenuScene {
                 selected: self.main_menu_cursor,
             }),
         }
@@ -796,6 +965,16 @@ impl AttractModeApp {
             + INTRO_TITLE_HOLD_TICKS
             + CREDIT_FRAME_TICKS * credit_frame_count
     }
+
+    fn record_level_completion(&mut self, road_index: usize) {
+        if road_index < FIRST_PLAYABLE_LEVEL_INDEX {
+            return;
+        }
+        let completion_index = road_index - FIRST_PLAYABLE_LEVEL_INDEX;
+        if let Some(count) = self.completion_counts.get_mut(completion_index) {
+            *count = count.saturating_add(1);
+        }
+    }
 }
 
 fn world_index_for_level(level_index: usize) -> usize {
@@ -850,11 +1029,15 @@ fn build_ship_render_state(session: &GameplaySession) -> ShipRenderState {
 mod tests {
     use std::path::PathBuf;
 
-    use skyroads_data::{level_from_road_entry, load_demo_rec_path, load_roads_lzs_path};
+    use skyroads_data::{
+        level_from_road_entry, load_demo_rec_path, load_roads_lzs_path, SkyroadsCfg,
+        SKYROADS_CFG_COMPLETION_COUNT,
+    };
 
     use super::{
-        AppInput, AppMode, AttractModeApp, AudioCommand, ControlMode, DisplaySettings, MenuCursor,
-        RenderScene, SettingsMenuCursor, GAMEPLAY_SONG_INDEX, RENDER_ROWS_BEHIND,
+        AppInput, AppMode, AttractModeApp, AudioCommand, ControlMode, DisplaySettings,
+        GoMenuSelection, MenuCursor, RenderScene, SettingsMenuCursor, GAMEPLAY_SONG_INDEX,
+        RENDER_ROWS_BEHIND,
     };
 
     fn repo_root() -> PathBuf {
@@ -872,6 +1055,31 @@ mod tests {
         AttractModeApp::new(levels, demo)
     }
 
+    fn skip_intro_to_main_menu(app: &mut AttractModeApp) {
+        for _ in 0..35 {
+            app.tick(AppInput::default());
+        }
+        app.tick(AppInput {
+            space: true,
+            ..AppInput::default()
+        });
+    }
+
+    fn enter_go_menu(app: &mut AttractModeApp) -> super::AppTickResult {
+        app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        })
+    }
+
+    fn enter_gameplay_from_go_menu(app: &mut AttractModeApp) -> super::AppTickResult {
+        enter_go_menu(app);
+        app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        })
+    }
+
     #[test]
     fn intro_starts_with_intro_scene_and_song() {
         let mut app = make_app();
@@ -884,31 +1092,18 @@ mod tests {
     #[test]
     fn skip_exits_intro_to_main_menu() {
         let mut app = make_app();
-        for _ in 0..35 {
-            app.tick(AppInput::default());
-        }
-        let tick = app.tick(AppInput {
-            space: true,
-            ..AppInput::default()
-        });
+        let tick = {
+            skip_intro_to_main_menu(&mut app);
+            app.tick(AppInput::default())
+        };
         assert_eq!(tick.mode, AppMode::MainMenu);
         assert!(matches!(tick.render_scene, RenderScene::MainMenu(_)));
-        assert_eq!(
-            tick.audio_commands,
-            vec![AudioCommand::PlayIntroSample, AudioCommand::PlaySong(1)]
-        );
     }
 
     #[test]
     fn idle_menu_enters_demo_playback() {
         let mut app = make_app();
-        for _ in 0..35 {
-            app.tick(AppInput::default());
-        }
-        app.tick(AppInput {
-            space: true,
-            ..AppInput::default()
-        });
+        skip_intro_to_main_menu(&mut app);
         for _ in 0..(70 * 5) {
             app.tick(AppInput::default());
         }
@@ -920,35 +1115,23 @@ mod tests {
     #[test]
     fn start_menu_entry_launches_gameplay() {
         let mut app = make_app();
-        for _ in 0..35 {
-            app.tick(AppInput::default());
+        skip_intro_to_main_menu(&mut app);
+        let tick = enter_go_menu(&mut app);
+        assert_eq!(tick.mode, AppMode::GoMenu);
+        match tick.render_scene {
+            RenderScene::GoMenu(scene) => {
+                assert_eq!(scene.selection, GoMenuSelection::from_road_index(1));
+                assert_eq!(scene.completion_counts, [0; SKYROADS_CFG_COMPLETION_COUNT]);
+            }
+            other => panic!("unexpected render scene: {other:?}"),
         }
-        app.tick(AppInput {
-            space: true,
-            ..AppInput::default()
-        });
-        let tick = app.tick(AppInput {
-            enter: true,
-            ..AppInput::default()
-        });
-        assert_eq!(tick.mode, AppMode::Gameplay);
-        assert!(matches!(tick.render_scene, RenderScene::Gameplay(_)));
-        assert_eq!(
-            tick.audio_commands,
-            vec![AudioCommand::PlaySong(GAMEPLAY_SONG_INDEX)]
-        );
+        assert!(tick.audio_commands.is_empty());
     }
 
     #[test]
     fn help_menu_cycles_back_to_main_menu() {
         let mut app = make_app();
-        for _ in 0..35 {
-            app.tick(AppInput::default());
-        }
-        app.tick(AppInput {
-            space: true,
-            ..AppInput::default()
-        });
+        skip_intro_to_main_menu(&mut app);
         app.tick(AppInput {
             down: true,
             ..AppInput::default()
@@ -987,17 +1170,8 @@ mod tests {
     #[test]
     fn gameplay_scene_tracks_absolute_rows_and_ship_bank() {
         let mut app = make_app();
-        for _ in 0..35 {
-            app.tick(AppInput::default());
-        }
-        app.tick(AppInput {
-            space: true,
-            ..AppInput::default()
-        });
-        app.tick(AppInput {
-            enter: true,
-            ..AppInput::default()
-        });
+        skip_intro_to_main_menu(&mut app);
+        enter_gameplay_from_go_menu(&mut app);
         let tick = app.tick(AppInput {
             up_held: true,
             right_held: true,
@@ -1037,13 +1211,7 @@ mod tests {
             fullscreen: true,
             borderless: false,
         });
-        for _ in 0..35 {
-            app.tick(AppInput::default());
-        }
-        app.tick(AppInput {
-            space: true,
-            ..AppInput::default()
-        });
+        skip_intro_to_main_menu(&mut app);
         app.tick(AppInput {
             down: true,
             ..AppInput::default()
@@ -1073,13 +1241,7 @@ mod tests {
     #[test]
     fn settings_menu_can_switch_control_mode_and_toggle_music() {
         let mut app = make_app();
-        for _ in 0..35 {
-            app.tick(AppInput::default());
-        }
-        app.tick(AppInput {
-            space: true,
-            ..AppInput::default()
-        });
+        skip_intro_to_main_menu(&mut app);
         app.tick(AppInput {
             down: true,
             ..AppInput::default()
@@ -1137,13 +1299,7 @@ mod tests {
     #[test]
     fn settings_menu_can_toggle_sound_fx() {
         let mut app = make_app();
-        for _ in 0..35 {
-            app.tick(AppInput::default());
-        }
-        app.tick(AppInput {
-            space: true,
-            ..AppInput::default()
-        });
+        skip_intro_to_main_menu(&mut app);
         app.tick(AppInput {
             down: true,
             ..AppInput::default()
@@ -1177,13 +1333,7 @@ mod tests {
     #[test]
     fn settings_menu_can_toggle_fullscreen_and_borderless() {
         let mut app = make_app();
-        for _ in 0..35 {
-            app.tick(AppInput::default());
-        }
-        app.tick(AppInput {
-            space: true,
-            ..AppInput::default()
-        });
+        skip_intro_to_main_menu(&mut app);
         app.tick(AppInput {
             down: true,
             ..AppInput::default()
@@ -1287,5 +1437,113 @@ mod tests {
             scene.rows.first().unwrap().row_index,
             (scene.current_row >> 3).saturating_sub(RENDER_ROWS_BEHIND)
         );
+    }
+
+    #[test]
+    fn go_menu_navigation_moves_through_visible_road_grid() {
+        let mut app = make_app();
+        skip_intro_to_main_menu(&mut app);
+        enter_go_menu(&mut app);
+
+        let right = app.tick(AppInput {
+            right: true,
+            ..AppInput::default()
+        });
+        let RenderScene::GoMenu(right_scene) = right.render_scene else {
+            panic!("expected go menu after moving right");
+        };
+        assert_eq!(right_scene.selection, GoMenuSelection::from_road_index(16));
+
+        let down = app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
+        let RenderScene::GoMenu(down_scene) = down.render_scene else {
+            panic!("expected go menu after moving down");
+        };
+        assert_eq!(down_scene.selection, GoMenuSelection::from_road_index(17));
+
+        let left = app.tick(AppInput {
+            left: true,
+            ..AppInput::default()
+        });
+        let RenderScene::GoMenu(left_scene) = left.render_scene else {
+            panic!("expected go menu after moving left");
+        };
+        assert_eq!(left_scene.selection, GoMenuSelection::from_road_index(2));
+    }
+
+    #[test]
+    fn demo_playback_keeps_hidden_demo_road() {
+        let mut app = make_app();
+        skip_intro_to_main_menu(&mut app);
+        for _ in 0..(70 * 5) {
+            app.tick(AppInput::default());
+        }
+        let tick = app.tick(AppInput::default());
+        let RenderScene::DemoPlayback(scene) = tick.render_scene else {
+            panic!("expected demo playback scene");
+        };
+        assert_eq!(app.demo_level_index, 0);
+        assert_eq!(scene.world_index, 0);
+        assert!(scene.is_demo);
+    }
+
+    #[test]
+    fn go_menu_confirm_starts_selected_road_and_win_records_completion() {
+        let mut app = make_app();
+        skip_intro_to_main_menu(&mut app);
+        enter_go_menu(&mut app);
+
+        app.tick(AppInput {
+            right: true,
+            ..AppInput::default()
+        });
+        app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
+        let gameplay = app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        });
+        assert_eq!(gameplay.mode, AppMode::Gameplay);
+        assert_eq!(app.current_level_index, 17);
+        assert!(matches!(gameplay.render_scene, RenderScene::Gameplay(_)));
+        assert_eq!(
+            gameplay.audio_commands,
+            vec![AudioCommand::PlaySong(GAMEPLAY_SONG_INDEX)]
+        );
+
+        app.gameplay_session.did_win = true;
+        app.tick(AppInput::default());
+        assert_eq!(app.completion_counts[16], 1);
+        assert_eq!(app.completion_counts[0], 0);
+
+        let go_menu = app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        });
+        let RenderScene::GoMenu(scene) = go_menu.render_scene else {
+            panic!("expected go menu after acknowledging win");
+        };
+        assert_eq!(scene.selection, GoMenuSelection::from_road_index(17));
+        assert_eq!(scene.completion_counts[16], 1);
+    }
+
+    #[test]
+    fn cfg_snapshot_round_trips_control_mode_sound_and_progress() {
+        let mut app = make_app();
+        let mut cfg = SkyroadsCfg::default();
+        cfg.control_mode = ControlMode::Mouse;
+        cfg.sound_enabled = false;
+        cfg.completion_counts[4] = 3;
+
+        app.apply_cfg(&cfg);
+
+        let snapshot = app.cfg_snapshot();
+        assert_eq!(snapshot.control_mode, ControlMode::Mouse);
+        assert!(!snapshot.sound_enabled);
+        assert_eq!(snapshot.completion_counts[4], 3);
     }
 }

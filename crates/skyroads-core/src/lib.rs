@@ -7,15 +7,17 @@ use skyroads_data::{
 };
 
 pub use app::{
-    AppInput, AppMode, AppTickResult, AttractModeApp, AudioCommand, ControlMode, DemoPlaybackState,
-    DisplayMode, DisplaySettings, HelpMenuScene, IntroSequenceState, MainMenuScene, MenuCursor,
-    RenderScene, RoadRenderRow, SettingsMenuCursor, SettingsMenuScene, ShipRenderState,
+    AppInput, AppMode, AppTickResult, AttractModeApp, AudioCommand, DemoPlaybackState, DisplayMode,
+    DisplaySettings, GoMenuScene, GoMenuSelection, HelpMenuScene, IntroSequenceState,
+    MainMenuScene, MenuCursor, RenderScene, RoadRenderRow, SettingsMenuCursor, SettingsMenuScene,
+    ShipRenderState,
 };
 pub use gameplay::{
     controller_state_from_demo_input, controller_state_from_dos_joystick,
     controller_state_from_dos_mouse, sample_demo_input_for_ship, ControllerState, GameSnapshot,
     GameplayEvent, GameplayFrameResult, GameplaySession, Ship, ShipState,
 };
+pub use skyroads_data::ControlMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DemoCursor {
