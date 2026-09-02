@@ -926,7 +926,7 @@ fn run() -> Result<()> {
     let mut last_controller_sample_error = None;
     let mut warned_missing_controller = false;
 
-    loop {
+    'running: loop {
         let frame_started = Instant::now();
         let pending_events = sdl.poll_events();
         if pending_events.quit_requested {
@@ -1047,6 +1047,9 @@ fn run() -> Result<()> {
             let tick = app.tick(app_input);
             apply_audio_commands(&mut audio_mixer, &audio_device, &tick.audio_commands)?;
             sync_cfg_if_changed(&cfg_path, &mut last_saved_cfg, &app)?;
+            if tick.quit_requested {
+                break 'running;
+            }
             if tick.mode != current_mode {
                 current_mode = tick.mode;
                 window.set_title(&window_title(current_mode, debug_view))?;
@@ -1614,6 +1617,7 @@ fn print_controls(source_root: &Path) {
     println!("  D-pad / left stick   navigate, steer, throttle/brake");
     println!("  south / Start        select; south also jumps in joystick mode");
     println!("  east / Back          return or exit gameplay");
+    println!("  Quit + select        quit from the main menu");
     println!("  right / left trigger accelerate / brake");
     println!(
         "  after crash/win      release select, then press it again; no separate prompt is drawn"

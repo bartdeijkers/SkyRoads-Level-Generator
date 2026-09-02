@@ -197,7 +197,7 @@ SDL controls:
 - `Shift+Enter`: toggle windowed/the most recently used fullscreen mode
 - `Space`: skip intro, jump, restart
 - `Escape`: back to menu
-- `Q`: quit
+- `Q`: quit; alternatively select `QUIT` from the main menu
 - `Tab`: cycle visual debug modes
 
 The `Controls` menu now follows the recovered DOS structure:
@@ -229,6 +229,7 @@ letters vary between Xbox, Nintendo-style, and 8BitDo modes:
 | Intro and menus | D-pad or left stick | Navigate |
 | Intro and menus | South face button or Start | Confirm/select |
 | Menus and gameplay | East face button or Back/View | Go back |
+| Main menu | Select `QUIT`, then South or Start | Quit |
 | Gameplay | D-pad left/right or left-stick X | Steer |
 | Gameplay | D-pad/stick up or right trigger | Accelerate |
 | Gameplay | D-pad/stick down or left trigger | Brake |

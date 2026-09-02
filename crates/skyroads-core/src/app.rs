@@ -46,6 +46,7 @@ pub enum MenuCursor {
     Start,
     Config,
     Help,
+    Quit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,14 +85,16 @@ impl MenuCursor {
             Self::Start => 0,
             Self::Config => 1,
             Self::Help => 2,
+            Self::Quit => 3,
         }
     }
 
     fn move_by(self, delta: i8) -> Self {
-        match (self.index() as i8 + delta).clamp(0, 2) {
+        match (self.index() as i8 + delta).clamp(0, 3) {
             0 => Self::Start,
             1 => Self::Config,
-            _ => Self::Help,
+            2 => Self::Help,
+            _ => Self::Quit,
         }
     }
 }
@@ -498,6 +501,7 @@ pub struct AppTickResult {
     pub mode: AppMode,
     pub render_scene: RenderScene,
     pub audio_commands: Vec<AudioCommand>,
+    pub quit_requested: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -727,9 +731,12 @@ impl AttractModeApp {
 
     pub fn tick(&mut self, input: AppInput) -> AppTickResult {
         let mut audio_commands = Vec::new();
+        let mut quit_requested = false;
         match self.mode {
             AppMode::Intro => self.tick_intro(input, &mut audio_commands),
-            AppMode::MainMenu => self.tick_main_menu(input, &mut audio_commands),
+            AppMode::MainMenu => {
+                quit_requested = self.tick_main_menu(input, &mut audio_commands);
+            }
             AppMode::HelpMenu => self.tick_help_menu(input, &mut audio_commands),
             AppMode::SettingsMenu => self.tick_settings_menu(input, &mut audio_commands),
             AppMode::InputSettings => self.tick_input_settings(input),
@@ -746,6 +753,7 @@ impl AttractModeApp {
             mode: self.mode,
             render_scene: self.current_render_scene(),
             audio_commands,
+            quit_requested,
         }
     }
 
@@ -772,7 +780,7 @@ impl AttractModeApp {
         self.intro_tick += 1;
     }
 
-    fn tick_main_menu(&mut self, input: AppInput, audio_commands: &mut Vec<AudioCommand>) {
+    fn tick_main_menu(&mut self, input: AppInput, audio_commands: &mut Vec<AudioCommand>) -> bool {
         if !self.menu_song_started {
             audio_commands.push(AudioCommand::PlaySong(MENU_SONG_INDEX));
             self.menu_song_started = true;
@@ -797,8 +805,9 @@ impl AttractModeApp {
                     self.help_page = 0;
                     self.mode = AppMode::HelpMenu;
                 }
+                MenuCursor::Quit => return true,
             }
-            return;
+            return false;
         }
 
         if navigated || input.escape || input.space {
@@ -810,6 +819,8 @@ impl AttractModeApp {
         if self.menu_idle_tick >= MENU_IDLE_DEMO_TICKS {
             self.start_demo(audio_commands);
         }
+
+        false
     }
 
     fn tick_go_menu(&mut self, input: AppInput, audio_commands: &mut Vec<AudioCommand>) {
@@ -1476,6 +1487,37 @@ mod tests {
             other => panic!("unexpected render scene: {other:?}"),
         }
         assert!(tick.audio_commands.is_empty());
+    }
+
+    #[test]
+    fn quit_menu_entry_requests_application_exit() {
+        let mut app = make_app();
+        skip_intro_to_main_menu(&mut app);
+
+        for expected_cursor in [MenuCursor::Config, MenuCursor::Help, MenuCursor::Quit] {
+            let tick = app.tick(AppInput {
+                down: true,
+                ..AppInput::default()
+            });
+            assert!(!tick.quit_requested);
+            match tick.render_scene {
+                RenderScene::MainMenu(scene) => assert_eq!(scene.selected, expected_cursor),
+                other => panic!("unexpected render scene: {other:?}"),
+            }
+        }
+
+        let tick = app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        });
+
+        assert!(tick.quit_requested);
+        assert_eq!(tick.mode, AppMode::MainMenu);
+        assert!(tick.audio_commands.is_empty());
+        match tick.render_scene {
+            RenderScene::MainMenu(scene) => assert_eq!(scene.selected, MenuCursor::Quit),
+            other => panic!("unexpected render scene: {other:?}"),
+        }
     }
 
     #[test]

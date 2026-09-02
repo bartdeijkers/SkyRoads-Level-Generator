@@ -4,7 +4,7 @@ use std::path::Path;
 use skyroads_core::{
     renderer_row_state, ControlMode, DemoPlaybackState, DirectionalActivation, DisplayMode,
     GoMenuScene, HelpMenuScene, InputSettingsCursor, InputSettingsScene, IntroSequenceState,
-    MainMenuScene, RenderScene, RoadRenderRow, SettingsMenuCursor, SettingsMenuScene,
+    MainMenuScene, MenuCursor, RenderScene, RoadRenderRow, SettingsMenuCursor, SettingsMenuScene,
     SteeringActivation, ThrottleActivation, VideoMode,
 };
 use skyroads_data::{
@@ -112,6 +112,12 @@ const GO_MENU_PIP_SPACING: i32 = 7;
 const GO_MENU_VISIBLE_PIP_LIMIT: usize = 7;
 const GO_MENU_SELECTION_COLOR: RgbColor = RgbColor::new(255, 185, 64);
 const GO_MENU_SELECTION_OUTLINE: RgbColor = RgbColor::new(255, 255, 255);
+
+const MAIN_MENU_CENTER_X: i32 = 161;
+const MAIN_MENU_ART_Y_OFFSET: i32 = -8;
+const MAIN_MENU_QUIT_Y: i32 = 179;
+const MAIN_MENU_TEXT: RgbColor = RgbColor::new(252, 252, 252);
+const MAIN_MENU_SELECTED_OUTLINE: RgbColor = RgbColor::new(236, 196, 0);
 
 const SETTINGS_CURSOR_WHITE: RgbColor = RgbColor::new(218, 218, 218);
 const SETTINGS_SELECTED_ORANGE: RgbColor = RgbColor::new(255, 80, 0);
@@ -458,6 +464,58 @@ fn archive_vga_palette(archive: &ImageArchive) -> VgaPalette {
         .unwrap_or_default()
 }
 
+fn derive_unselected_main_menu(archive: &ImageArchive) -> Option<ImageFrame> {
+    // MAINMENU stores one frame per selected row. At every outline pixel, two
+    // frames retain the unselected value, so their per-pixel majority rebuilds
+    // the original menu without leaving another row highlighted.
+    let first = archive.frames.first()?.as_slice();
+    let second = archive.frames.get(1)?.as_slice();
+    let third = archive.frames.get(2)?.as_slice();
+    let [first] = first else {
+        return None;
+    };
+    let [second] = second else {
+        return None;
+    };
+    let [third] = third else {
+        return None;
+    };
+
+    let has_matching_geometry = first.x_offset == second.x_offset
+        && first.x_offset == third.x_offset
+        && first.y_offset == second.y_offset
+        && first.y_offset == third.y_offset
+        && first.width == second.width
+        && first.width == third.width
+        && first.height == second.height
+        && first.height == third.height
+        && first.transparent_zero == second.transparent_zero
+        && first.transparent_zero == third.transparent_zero
+        && first.palette == second.palette
+        && first.palette == third.palette
+        && first.pixels.len() == second.pixels.len()
+        && first.pixels.len() == third.pixels.len();
+    if !has_matching_geometry {
+        return None;
+    }
+
+    let mut unselected = first.clone();
+    for (index, pixel) in unselected.pixels.iter_mut().enumerate() {
+        let first_pixel = first.pixels[index];
+        let second_pixel = second.pixels[index];
+        let third_pixel = third.pixels[index];
+        *pixel = if first_pixel == second_pixel || first_pixel == third_pixel {
+            first_pixel
+        } else if second_pixel == third_pixel {
+            second_pixel
+        } else {
+            return None;
+        };
+    }
+
+    Some(unselected)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttractModeAssets {
     pub intro: ImageArchive,
@@ -509,6 +567,7 @@ impl AttractModeAssets {
 pub struct ReferenceRenderer {
     assets: AttractModeAssets,
     car_atlas: Option<CarAtlas>,
+    main_menu_unselected: Option<ImageFrame>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -542,7 +601,12 @@ impl DebugViewMode {
 impl ReferenceRenderer {
     pub fn new(assets: AttractModeAssets) -> Self {
         let car_atlas = CarAtlas::from_archive(&assets.cars);
-        Self { assets, car_atlas }
+        let main_menu_unselected = derive_unselected_main_menu(&assets.main_menu);
+        Self {
+            assets,
+            car_atlas,
+            main_menu_unselected,
+        }
     }
 
     pub fn assets(&self) -> &AttractModeAssets {
@@ -636,13 +700,92 @@ impl ReferenceRenderer {
         frame.clear(RgbColor::new(0, 0, 0));
         self.draw_archive_frame(frame, &self.assets.intro, 0, 1.0, 1.0);
         self.draw_archive_frame(frame, &self.assets.intro, 1, 1.0, 1.0);
-        self.draw_archive_frame(
-            frame,
-            &self.assets.main_menu,
-            scene.selected.index(),
-            1.0,
-            1.0,
-        );
+        self.draw_main_menu_art(frame, scene.selected);
+        self.draw_main_menu_quit(frame, scene.selected == MenuCursor::Quit);
+    }
+
+    fn draw_main_menu_art(&self, frame: &mut FrameBuffer320x200, selected: MenuCursor) {
+        if selected == MenuCursor::Quit {
+            if let Some(fragment) = &self.main_menu_unselected {
+                self.draw_main_menu_fragment(frame, fragment);
+                return;
+            }
+        }
+
+        let frame_index = selected.index().min(MenuCursor::Help.index());
+        if let Some(fragments) = self.assets.main_menu.frames.get(frame_index) {
+            for fragment in fragments {
+                self.draw_main_menu_fragment(frame, fragment);
+            }
+        }
+    }
+
+    fn draw_main_menu_fragment(&self, frame: &mut FrameBuffer320x200, fragment: &ImageFrame) {
+        let x = i32::from(fragment.x_offset);
+        let y = i32::from(fragment.y_offset) + MAIN_MENU_ART_Y_OFFSET;
+        self.draw_fragment_at(frame, fragment, x, y);
+    }
+
+    fn draw_main_menu_quit(&self, frame: &mut FrameBuffer320x200, selected: bool) {
+        let label = "QUIT";
+        let label_width = main_menu_text_width(label);
+        let label_x = MAIN_MENU_CENTER_X - label_width / 2;
+
+        if selected {
+            for (offset_x, offset_y) in [
+                (-1, -1),
+                (0, -1),
+                (1, -1),
+                (-1, 0),
+                (1, 0),
+                (-1, 1),
+                (0, 1),
+                (1, 1),
+            ] {
+                self.draw_main_menu_text(
+                    frame,
+                    label_x + offset_x,
+                    MAIN_MENU_QUIT_Y + offset_y,
+                    label,
+                    MAIN_MENU_SELECTED_OUTLINE,
+                );
+            }
+        }
+
+        self.draw_main_menu_text(frame, label_x, MAIN_MENU_QUIT_Y, label, MAIN_MENU_TEXT);
+    }
+
+    fn draw_main_menu_text(
+        &self,
+        frame: &mut FrameBuffer320x200,
+        x: i32,
+        y: i32,
+        text: &str,
+        color: RgbColor,
+    ) {
+        let mut cursor_x = x;
+        for character in text.chars() {
+            let Some(glyph) = main_menu_glyph(character) else {
+                cursor_x += 4;
+                continue;
+            };
+            for (row, row_bits) in glyph.rows.iter().copied().enumerate() {
+                for column in 0..glyph.width {
+                    let bit = glyph.width - column - 1;
+                    if (row_bits >> bit) & 1 == 0 {
+                        continue;
+                    }
+                    frame.fill_rect(
+                        cursor_x + (column * 2) as i32,
+                        y + (row * 2) as i32,
+                        2,
+                        2,
+                        color,
+                    );
+                }
+            }
+            cursor_x += ((glyph.width + 1) * 2) as i32;
+        }
     }
 
     fn render_help_menu(&self, frame: &mut FrameBuffer320x200, scene: &HelpMenuScene) {
@@ -3713,6 +3856,49 @@ fn glyph_rows(ch: char) -> Option<[u8; 5]> {
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MainMenuGlyph {
+    width: usize,
+    rows: [u8; 7],
+}
+
+fn main_menu_glyph(character: char) -> Option<MainMenuGlyph> {
+    Some(match character.to_ascii_uppercase() {
+        'Q' => MainMenuGlyph {
+            width: 5,
+            rows: [
+                0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101,
+            ],
+        },
+        'U' => MainMenuGlyph {
+            width: 5,
+            rows: [
+                0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+            ],
+        },
+        'I' => MainMenuGlyph {
+            width: 3,
+            rows: [0b111, 0b010, 0b010, 0b010, 0b010, 0b010, 0b111],
+        },
+        'T' => MainMenuGlyph {
+            width: 5,
+            rows: [
+                0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100,
+            ],
+        },
+        _ => return None,
+    })
+}
+
+fn main_menu_text_width(text: &str) -> i32 {
+    let width = text
+        .chars()
+        .filter_map(main_menu_glyph)
+        .map(|glyph| (glyph.width + 1) * 2)
+        .sum::<usize>();
+    width.saturating_sub(2) as i32
+}
+
 pub fn frame_hash(frame: &FrameBuffer320x200) -> u64 {
     let hash_bytes = |hash: u64, bytes: &[u8]| {
         bytes.iter().fold(hash, |acc, value| {
@@ -3733,9 +3919,9 @@ mod tests {
     use skyroads_core::{
         AppInput, AttractModeApp, ControlMode, DirectionalActivation, DisplaySettings, GoMenuScene,
         GoMenuSelection, InputActivationPreview, InputSettingsCursor, InputSettingsScene,
-        InputTuning, RenderScene, RoadRenderRow, SensitivityPercent, SettingsMenuCursor,
-        SettingsMenuScene, ShipState, SteeringActivation, ThrottleActivation, TriggerActivation,
-        VideoMode,
+        InputTuning, MainMenuScene, MenuCursor, RenderScene, RoadRenderRow, SensitivityPercent,
+        SettingsMenuCursor, SettingsMenuScene, ShipState, SteeringActivation, ThrottleActivation,
+        TriggerActivation, VideoMode,
     };
     use skyroads_data::{
         level_from_road_entry, load_demo_rec_path, load_roads_lzs_path,
@@ -4898,6 +5084,33 @@ mod tests {
             menu.palette,
             super::archive_vga_palette(&renderer.assets().main_menu)
         );
+    }
+
+    #[test]
+    fn quit_main_menu_entry_has_a_distinct_selected_state() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+        let start = renderer.render_scene(&RenderScene::MainMenu(MainMenuScene {
+            selected: MenuCursor::Start,
+        }));
+        let help = renderer.render_scene(&RenderScene::MainMenu(MainMenuScene {
+            selected: MenuCursor::Help,
+        }));
+        let quit = renderer.render_scene(&RenderScene::MainMenu(MainMenuScene {
+            selected: MenuCursor::Quit,
+        }));
+
+        assert!(renderer.main_menu_unselected.is_some());
+        assert_ne!(frame_hash(&quit), frame_hash(&help));
+        for y in 156..178 {
+            for x in 120..202 {
+                assert_eq!(
+                    quit.pixel_color(x, y),
+                    start.pixel_color(x, y),
+                    "QUIT must leave HELP in its unselected state at ({x}, {y})"
+                );
+            }
+        }
     }
 
     #[test]

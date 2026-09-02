@@ -20,7 +20,7 @@ Arrow keys: menu navigation, steering, throttle, and brake
 Enter: select or restart
 Space: skip intro, jump, or restart
 Escape: return to the menu
-Q: quit
+Q: quit; alternatively select QUIT from the main menu
 Shift+Enter: toggle windowed mode and the most recently used fullscreen mode
 
 Controller controls
@@ -31,6 +31,7 @@ before using gamepad movement during gameplay.
 D-pad or left stick: navigate menus
 South face button or Start: confirm/select
 East face button or Back/View: go back
+Select QUIT on the main menu, then confirm: quit
 D-pad left/right or left-stick X: steer
 D-pad/stick up or right trigger: accelerate
 D-pad/stick down or left trigger: brake
