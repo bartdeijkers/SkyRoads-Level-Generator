@@ -324,6 +324,8 @@ fn mapped_snapshot(state: GameControllerState) -> GamepadSnapshot {
         east_pressed: state.east_pressed,
         start_pressed: state.start_pressed,
         back_pressed: state.back_pressed,
+        left_shoulder_pressed: state.left_shoulder_pressed,
+        right_shoulder_pressed: state.right_shoulder_pressed,
     }
 }
 
@@ -544,6 +546,8 @@ mod tests {
             east_pressed: false,
             start_pressed: true,
             back_pressed: false,
+            left_shoulder_pressed: true,
+            right_shoulder_pressed: false,
         });
 
         assert_eq!(
@@ -561,6 +565,8 @@ mod tests {
                 east_pressed: false,
                 start_pressed: true,
                 back_pressed: false,
+                left_shoulder_pressed: true,
+                right_shoulder_pressed: false,
             }
         );
     }

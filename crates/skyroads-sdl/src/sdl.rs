@@ -62,6 +62,8 @@ const SDL_CONTROLLER_BUTTON_SOUTH: c_int = 0;
 const SDL_CONTROLLER_BUTTON_EAST: c_int = 1;
 const SDL_CONTROLLER_BUTTON_BACK: c_int = 4;
 const SDL_CONTROLLER_BUTTON_START: c_int = 6;
+const SDL_CONTROLLER_BUTTON_LEFTSHOULDER: c_int = 9;
+const SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: c_int = 10;
 const SDL_CONTROLLER_BUTTON_DPAD_UP: c_int = 11;
 const SDL_CONTROLLER_BUTTON_DPAD_DOWN: c_int = 12;
 const SDL_CONTROLLER_BUTTON_DPAD_LEFT: c_int = 13;
@@ -448,6 +450,8 @@ pub struct GameControllerState {
     pub east_pressed: bool,
     pub start_pressed: bool,
     pub back_pressed: bool,
+    pub left_shoulder_pressed: bool,
+    pub right_shoulder_pressed: bool,
 }
 
 impl From<Rect> for SDL_Rect {
@@ -1124,6 +1128,14 @@ impl<'sdl> GameController<'sdl> {
                 east_pressed: controller_button(self.raw, SDL_CONTROLLER_BUTTON_EAST),
                 start_pressed: controller_button(self.raw, SDL_CONTROLLER_BUTTON_START),
                 back_pressed: controller_button(self.raw, SDL_CONTROLLER_BUTTON_BACK),
+                left_shoulder_pressed: controller_button(
+                    self.raw,
+                    SDL_CONTROLLER_BUTTON_LEFTSHOULDER,
+                ),
+                right_shoulder_pressed: controller_button(
+                    self.raw,
+                    SDL_CONTROLLER_BUTTON_RIGHTSHOULDER,
+                ),
             }
         };
         if let Some(error) = current_error() {

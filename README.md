@@ -53,6 +53,7 @@ Packaged-build setup is documented separately for
 | Navigate | Arrow keys or WASD | D-pad or left stick |
 | Confirm | Enter | South face button or Start |
 | Back | Escape | East face button or Back/View |
+| Previous/next display value in Controls | — | LB / RB |
 | Jump | Space | South face button |
 | Quit | Q | Select `QUIT` on the main menu |
 | Toggle fullscreen | Shift+Enter | — |
@@ -74,7 +75,9 @@ stored in `SKYROADS-RS-INPUT.CFG` without changing the DOS-compatible
 `SKYROADS.CFG`.
 
 The display menu supports windowed, borderless, and SDL-reported exclusive
-modes. The last successful choice is stored in `SKYROADS-RS-DISPLAY.CFG`.
+modes. With `DISPLAY` or `VIDEO MODE` selected in Controls, LB and RB cycle the
+value backward and forward. The last successful choice is stored in
+`SKYROADS-RS-DISPLAY.CFG`.
 
 Controller support and its current hardware-validation limits are tracked in
 [the controller plan](plans/expand-controller-support.md).

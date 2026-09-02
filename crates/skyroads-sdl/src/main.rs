@@ -965,7 +965,8 @@ fn run() -> Result<()> {
             controller_event_discontinuity || controller_sample.input_discontinuity;
         let gamepad_snapshot = controller_sample.snapshot;
         let input_tuning = app.input_tuning();
-        gamepad_latch.sample(gamepad_snapshot, input_tuning.controller_sensitivity());
+        let gamepad_input =
+            gamepad_latch.sample(gamepad_snapshot, input_tuning.controller_sensitivity());
         let mut input = latch.sample(sdl.keyboard_state());
         if controller_input_discontinuity {
             menu_input_latch.rebase_after_gamepad_discontinuity(
@@ -985,6 +986,9 @@ fn run() -> Result<()> {
         );
         let toggle_fullscreen = menu_input_latch.take_toggle_fullscreen_request();
         apply_menu_edges(&mut input.app, menu_edges);
+        if current_mode == AppMode::SettingsMenu && !controller_input_discontinuity {
+            apply_controller_settings_edges(&mut input.app, gamepad_input);
+        }
         let mouse = sdl.mouse_state();
         let (mouse_x, mouse_y) = framebuffer_mouse_position(mouse.x, mouse.y, input_rect);
         app.set_input_preview(gamepad::input_activation_preview(
@@ -1411,7 +1415,8 @@ fn run_gamepad_smoke(runtime: GamepadSmokeRuntime<'_, '_, '_>) -> Result<()> {
 
         let snapshot = smoke.next_snapshot(current_mode);
         let mut input = AppInput::default();
-        gamepad_latch.sample(snapshot, app.input_tuning().controller_sensitivity());
+        let gamepad_input =
+            gamepad_latch.sample(snapshot, app.input_tuning().controller_sensitivity());
         let menu_edges = menu_input_latch.sample(
             MenuHeld::default(),
             gamepad_latch.menu_held(),
@@ -1420,6 +1425,9 @@ fn run_gamepad_smoke(runtime: GamepadSmokeRuntime<'_, '_, '_>) -> Result<()> {
             current_mode,
         );
         apply_menu_edges(&mut input, menu_edges);
+        if current_mode == AppMode::SettingsMenu {
+            apply_controller_settings_edges(&mut input, gamepad_input);
+        }
         if current_mode == AppMode::Gameplay {
             input.gameplay_controls_override = Some(gamepad::controller_state(
                 snapshot,
@@ -1617,6 +1625,7 @@ fn print_controls(source_root: &Path) {
     println!("  D-pad / left stick   navigate, steer, throttle/brake");
     println!("  south / Start        select; south also jumps in joystick mode");
     println!("  east / Back          return or exit gameplay");
+    println!("  LB / RB in Controls  previous / next DISPLAY or VIDEO MODE value");
     println!("  Quit + select        quit from the main menu");
     println!("  right / left trigger accelerate / brake");
     println!(
@@ -1938,6 +1947,11 @@ fn apply_menu_edges(input: &mut AppInput, menu_edges: AppInput) {
     input.enter = menu_edges.enter;
     input.escape = menu_edges.escape;
     input.space = menu_edges.space;
+}
+
+fn apply_controller_settings_edges(input: &mut AppInput, gamepad_input: AppInput) {
+    input.previous_setting = gamepad_input.previous_setting;
+    input.next_setting = gamepad_input.next_setting;
 }
 
 fn normalized_gameplay_controls(

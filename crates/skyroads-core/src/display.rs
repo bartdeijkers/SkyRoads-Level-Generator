@@ -152,6 +152,15 @@ impl DisplayModeCatalog {
         let next_index = (current_index + 1) % self.modes.len();
         self.modes.get(next_index).copied()
     }
+
+    pub fn previous_mode(&self, current: Option<VideoMode>) -> Option<VideoMode> {
+        let current_index = current.and_then(|mode| self.modes.binary_search(&mode).ok());
+        let Some(current_index) = current_index else {
+            return self.recommended_mode();
+        };
+        let previous_index = current_index.checked_sub(1).unwrap_or(self.modes.len() - 1);
+        self.modes.get(previous_index).copied()
+    }
 }
 
 #[cfg(test)]
@@ -230,5 +239,17 @@ mod tests {
         let catalog = DisplayModeCatalog::new(desktop, [mode(3840, 2160, Some(60)), hd]);
 
         assert_eq!(catalog.recommended_mode(), Some(hd));
+    }
+
+    #[test]
+    fn catalog_cycles_modes_backward_with_wraparound() {
+        let desktop = mode(3840, 2160, Some(60));
+        let full_hd = mode(1920, 1080, Some(60));
+        let four_k_144 = mode(3840, 2160, Some(144));
+        let catalog = DisplayModeCatalog::new(desktop, [full_hd, desktop, four_k_144]);
+
+        assert_eq!(catalog.previous_mode(Some(four_k_144)), Some(desktop));
+        assert_eq!(catalog.previous_mode(Some(full_hd)), Some(four_k_144));
+        assert_eq!(catalog.previous_mode(None), Some(four_k_144));
     }
 }

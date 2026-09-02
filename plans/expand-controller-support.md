@@ -217,6 +217,7 @@ different letter there.
 | Intro and menus | navigate | D-pad or left stick | directional `AppInput` edges |
 | Intro and menus | confirm/select | south face button or Start | `AppInput.enter` edge |
 | Menus/gameplay | back | east face button or Back/View | `AppInput.escape` edge |
+| Controls menu | previous/next display value | left/right shoulder | semantic setting edge for selected `DISPLAY` or `VIDEO MODE` |
 | Gameplay | steer | D-pad left/right or left-stick X | `turn_input` `-1 / 0 / 1` |
 | Gameplay | accelerate | D-pad/stick up or right trigger | `accel_input = 1` |
 | Gameplay | brake | D-pad/stick down or left trigger | `accel_input = -1` |

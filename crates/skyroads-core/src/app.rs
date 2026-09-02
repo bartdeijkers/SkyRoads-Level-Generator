@@ -330,6 +330,12 @@ enum SettingsNavDirection {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsValueDirection {
+    Previous,
+    Next,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GoMenuDirection {
     Left,
     Right,
@@ -346,6 +352,8 @@ pub struct AppInput {
     pub enter: bool,
     pub escape: bool,
     pub space: bool,
+    pub previous_setting: bool,
+    pub next_setting: bool,
     pub up_held: bool,
     pub down_held: bool,
     pub left_held: bool,
@@ -693,21 +701,50 @@ impl AttractModeApp {
     }
 
     pub fn cycle_display_mode(&mut self) {
-        let next_settings = match self.display_settings {
-            DisplaySettings::Windowed => DisplaySettings::BorderlessDesktop,
-            DisplaySettings::BorderlessDesktop => match self.selected_video_mode {
-                Some(mode) => DisplaySettings::ExclusiveFullscreen(mode),
-                None => DisplaySettings::Windowed,
-            },
-            DisplaySettings::ExclusiveFullscreen(_) => DisplaySettings::Windowed,
+        self.cycle_display_mode_in(SettingsValueDirection::Next);
+    }
+
+    fn cycle_display_mode_in(&mut self, direction: SettingsValueDirection) {
+        let next_settings = match (self.display_settings, direction) {
+            (DisplaySettings::Windowed, SettingsValueDirection::Next) => {
+                DisplaySettings::BorderlessDesktop
+            }
+            (DisplaySettings::Windowed, SettingsValueDirection::Previous) => self
+                .selected_video_mode
+                .map(DisplaySettings::ExclusiveFullscreen)
+                .unwrap_or(DisplaySettings::BorderlessDesktop),
+            (DisplaySettings::BorderlessDesktop, SettingsValueDirection::Next) => {
+                match self.selected_video_mode {
+                    Some(mode) => DisplaySettings::ExclusiveFullscreen(mode),
+                    None => DisplaySettings::Windowed,
+                }
+            }
+            (DisplaySettings::BorderlessDesktop, SettingsValueDirection::Previous) => {
+                DisplaySettings::Windowed
+            }
+            (DisplaySettings::ExclusiveFullscreen(_), SettingsValueDirection::Next) => {
+                DisplaySettings::Windowed
+            }
+            (DisplaySettings::ExclusiveFullscreen(_), SettingsValueDirection::Previous) => {
+                DisplaySettings::BorderlessDesktop
+            }
         };
         let _ = self.set_display_settings(next_settings);
     }
 
     pub fn cycle_video_mode(&mut self) {
-        let next_mode = self
-            .display_mode_catalog
-            .next_mode(self.selected_video_mode);
+        self.cycle_video_mode_in(SettingsValueDirection::Next);
+    }
+
+    fn cycle_video_mode_in(&mut self, direction: SettingsValueDirection) {
+        let next_mode = match direction {
+            SettingsValueDirection::Previous => self
+                .display_mode_catalog
+                .previous_mode(self.selected_video_mode),
+            SettingsValueDirection::Next => self
+                .display_mode_catalog
+                .next_mode(self.selected_video_mode),
+        };
         if let Some(next_mode) = next_mode {
             let _ = self.set_selected_video_mode(next_mode);
         }
@@ -895,6 +932,14 @@ impl AttractModeApp {
             self.settings_cursor = self
                 .settings_cursor
                 .move_in_direction(SettingsNavDirection::Down);
+        }
+        let settings_direction = match (input.previous_setting, input.next_setting) {
+            (true, false) => Some(SettingsValueDirection::Previous),
+            (false, true) => Some(SettingsValueDirection::Next),
+            (false, false) | (true, true) => None,
+        };
+        if let Some(direction) = settings_direction {
+            self.apply_settings_direction(direction);
         }
         if input.enter || input.space {
             self.apply_settings_selection(audio_commands);
@@ -1110,6 +1155,19 @@ impl AttractModeApp {
             SettingsMenuCursor::Keyboard
             | SettingsMenuCursor::Joystick
             | SettingsMenuCursor::Mouse => {}
+        }
+    }
+
+    fn apply_settings_direction(&mut self, direction: SettingsValueDirection) {
+        match self.settings_cursor {
+            SettingsMenuCursor::Display => self.cycle_display_mode_in(direction),
+            SettingsMenuCursor::VideoMode => self.cycle_video_mode_in(direction),
+            SettingsMenuCursor::Keyboard
+            | SettingsMenuCursor::Joystick
+            | SettingsMenuCursor::Mouse
+            | SettingsMenuCursor::SoundFx
+            | SettingsMenuCursor::Music
+            | SettingsMenuCursor::Input => {}
         }
     }
 
@@ -1967,6 +2025,69 @@ mod tests {
             app.display_settings(),
             DisplaySettings::ExclusiveFullscreen(full_hd_60)
         );
+    }
+
+    #[test]
+    fn settings_value_edges_adjust_only_display_and_video_mode_rows() {
+        let mut app = make_app();
+        let full_hd_60 = video_mode(1920, 1080, 60);
+        let four_k_60 = video_mode(3840, 2160, 60);
+        let four_k_144 = video_mode(3840, 2160, 144);
+        app.configure_display_modes(DisplayModeCatalog::new(
+            four_k_60,
+            [full_hd_60, four_k_60, four_k_144],
+        ));
+        skip_intro_to_main_menu(&mut app);
+        enter_settings_menu(&mut app);
+
+        app.tick(AppInput {
+            previous_setting: true,
+            ..AppInput::default()
+        });
+        assert_eq!(app.display_settings(), DisplaySettings::BorderlessDesktop);
+
+        app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
+        app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
+        app.tick(AppInput {
+            previous_setting: true,
+            next_setting: true,
+            ..AppInput::default()
+        });
+        assert_eq!(app.display_settings(), DisplaySettings::BorderlessDesktop);
+
+        app.tick(AppInput {
+            previous_setting: true,
+            ..AppInput::default()
+        });
+        assert_eq!(app.display_settings(), DisplaySettings::Windowed);
+        app.tick(AppInput {
+            next_setting: true,
+            ..AppInput::default()
+        });
+        assert_eq!(app.display_settings(), DisplaySettings::BorderlessDesktop);
+
+        app.tick(AppInput {
+            right: true,
+            previous_setting: true,
+            ..AppInput::default()
+        });
+        assert_eq!(app.selected_video_mode(), Some(four_k_60));
+        app.tick(AppInput {
+            next_setting: true,
+            ..AppInput::default()
+        });
+        assert_eq!(app.selected_video_mode(), Some(four_k_144));
+        app.tick(AppInput {
+            next_setting: true,
+            ..AppInput::default()
+        });
+        assert_eq!(app.selected_video_mode(), Some(full_hd_60));
     }
 
     #[test]

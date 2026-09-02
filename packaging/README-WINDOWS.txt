@@ -21,6 +21,7 @@ before using gamepad movement during gameplay.
 D-pad or left stick: navigate menus
 South face button or Start: confirm/select
 East face button or Back/View: go back
+LB / RB in Controls: previous / next DISPLAY or VIDEO MODE value
 Select QUIT on the main menu, then confirm: quit
 D-pad left/right or left-stick X: steer
 D-pad/stick up or right trigger: accelerate

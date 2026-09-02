@@ -31,6 +31,8 @@ pub struct GamepadSnapshot {
     pub east_pressed: bool,
     pub start_pressed: bool,
     pub back_pressed: bool,
+    pub left_shoulder_pressed: bool,
+    pub right_shoulder_pressed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +186,8 @@ pub struct GamepadLatch {
     stick_horizontal: MenuDirection,
     stick_vertical: MenuDirection,
     previous: MenuHeld,
+    previous_left_shoulder: bool,
+    previous_right_shoulder: bool,
     pending_app_input: AppInput,
 }
 
@@ -230,6 +234,12 @@ impl GamepadLatch {
         self.pending_app_input.left_held = current.left_held;
         self.pending_app_input.right_held = current.right_held;
         self.pending_app_input.enter_held = current.enter_held;
+        self.pending_app_input.previous_setting |=
+            snapshot.left_shoulder_pressed && !self.previous_left_shoulder;
+        self.pending_app_input.next_setting |=
+            snapshot.right_shoulder_pressed && !self.previous_right_shoulder;
+        self.previous_left_shoulder = snapshot.left_shoulder_pressed;
+        self.previous_right_shoulder = snapshot.right_shoulder_pressed;
 
         self.pending_app_input
     }
@@ -1168,6 +1178,28 @@ mod tests {
             assert_eq!(input.escape, expected_edge);
             latch.consume_app_edges();
         }
+    }
+
+    #[test]
+    fn shoulder_buttons_emit_one_setting_edge_per_press() {
+        let mut latch = GamepadLatch::default();
+        let both_held = GamepadSnapshot {
+            left_shoulder_pressed: true,
+            right_shoulder_pressed: true,
+            ..GamepadSnapshot::default()
+        };
+
+        let pressed = latch.sample(both_held, SensitivityPercent::DEFAULT);
+        latch.consume_app_edges();
+        let still_held = latch.sample(both_held, SensitivityPercent::DEFAULT);
+        latch.consume_app_edges();
+        latch.sample(GamepadSnapshot::default(), SensitivityPercent::DEFAULT);
+        latch.consume_app_edges();
+        let pressed_again = latch.sample(both_held, SensitivityPercent::DEFAULT);
+
+        assert!(pressed.previous_setting && pressed.next_setting);
+        assert!(!still_held.previous_setting && !still_held.next_setting);
+        assert!(pressed_again.previous_setting && pressed_again.next_setting);
     }
 
     #[test]
