@@ -5,7 +5,8 @@ use skyroads_data::{
 
 use crate::{
     sample_demo_input_for_ship, ControllerState, DisplayMode, DisplayModeCatalog, DisplaySettings,
-    GameplayEvent, GameplaySession, VideoMode,
+    GameplayEvent, GameplaySession, InputActivationPreview, InputTuning, SensitivityPercent,
+    VideoMode,
 };
 
 const TICKS_PER_SECOND: usize = 70;
@@ -34,6 +35,7 @@ pub enum AppMode {
     MainMenu,
     HelpMenu,
     SettingsMenu,
+    InputSettings,
     GoMenu,
     DemoPlayback,
     Gameplay,
@@ -192,6 +194,7 @@ pub enum SettingsMenuCursor {
     Music,
     Display,
     VideoMode,
+    Input,
 }
 
 impl SettingsMenuCursor {
@@ -202,7 +205,7 @@ impl SettingsMenuCursor {
             Self::Mouse => Some(3),
             Self::SoundFx => Some(4),
             Self::Music => Some(5),
-            Self::Display | Self::VideoMode => None,
+            Self::Display | Self::VideoMode | Self::Input => None,
         }
     }
 
@@ -219,7 +222,7 @@ impl SettingsMenuCursor {
             Self::Keyboard => Some(ControlMode::Keyboard),
             Self::Joystick => Some(ControlMode::Joystick),
             Self::Mouse => Some(ControlMode::Mouse),
-            Self::SoundFx | Self::Music | Self::Display | Self::VideoMode => None,
+            Self::SoundFx | Self::Music | Self::Display | Self::VideoMode | Self::Input => None,
         }
     }
 
@@ -230,8 +233,9 @@ impl SettingsMenuCursor {
             Self::Mouse => 250,
             Self::SoundFx => 120,
             Self::Music => 208,
-            Self::Display => 120,
-            Self::VideoMode => 208,
+            Self::Display => 76,
+            Self::VideoMode => 164,
+            Self::Input => 252,
         }
     }
 
@@ -239,7 +243,7 @@ impl SettingsMenuCursor {
         match self {
             Self::Keyboard | Self::Joystick | Self::Mouse => 0,
             Self::SoundFx | Self::Music => 1,
-            Self::Display | Self::VideoMode => 2,
+            Self::Display | Self::VideoMode | Self::Input => 2,
         }
     }
 
@@ -247,7 +251,7 @@ impl SettingsMenuCursor {
         match row {
             0 => &[Self::Keyboard, Self::Joystick, Self::Mouse],
             1 => &[Self::SoundFx, Self::Music],
-            2 => &[Self::Display, Self::VideoMode],
+            2 => &[Self::Display, Self::VideoMode, Self::Input],
             _ => &[],
         }
     }
@@ -285,6 +289,32 @@ impl SettingsMenuCursor {
                 )
             })
             .unwrap_or(self)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InputSettingsCursor {
+    #[default]
+    MouseSensitivity,
+    ControllerSensitivity,
+    Reset,
+}
+
+impl InputSettingsCursor {
+    pub fn index(self) -> usize {
+        match self {
+            Self::MouseSensitivity => 0,
+            Self::ControllerSensitivity => 1,
+            Self::Reset => 2,
+        }
+    }
+
+    fn move_by(self, delta: i8) -> Self {
+        match (self.index() as i8 + delta).clamp(0, 2) {
+            0 => Self::MouseSensitivity,
+            1 => Self::ControllerSensitivity,
+            _ => Self::Reset,
+        }
     }
 }
 
@@ -444,6 +474,13 @@ pub struct SettingsMenuScene {
     pub music_enabled: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputSettingsScene {
+    pub cursor: InputSettingsCursor,
+    pub tuning: InputTuning,
+    pub preview: InputActivationPreview,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum RenderScene {
     Intro(IntroSequenceState),
@@ -451,6 +488,7 @@ pub enum RenderScene {
     HelpMenu(HelpMenuScene),
     GoMenu(GoMenuScene),
     SettingsMenu(SettingsMenuScene),
+    InputSettings(InputSettingsScene),
     DemoPlayback(DemoPlaybackState),
     Gameplay(DemoPlaybackState),
 }
@@ -483,6 +521,9 @@ pub struct AttractModeApp {
     menu_song_started: bool,
     control_mode: ControlMode,
     settings_cursor: SettingsMenuCursor,
+    input_settings_cursor: InputSettingsCursor,
+    input_tuning: InputTuning,
+    input_preview: InputActivationPreview,
     display_mode_catalog: DisplayModeCatalog,
     display_settings: DisplaySettings,
     last_fullscreen_settings: DisplaySettings,
@@ -525,6 +566,9 @@ impl AttractModeApp {
             menu_song_started: false,
             control_mode: ControlMode::Keyboard,
             settings_cursor: SettingsMenuCursor::Keyboard,
+            input_settings_cursor: InputSettingsCursor::default(),
+            input_tuning: InputTuning::default(),
+            input_preview: InputActivationPreview::default(),
             display_mode_catalog: DisplayModeCatalog::default(),
             display_settings: DisplaySettings::default(),
             last_fullscreen_settings: DisplaySettings::BorderlessDesktop,
@@ -541,6 +585,22 @@ impl AttractModeApp {
 
     pub fn control_mode(&self) -> ControlMode {
         self.control_mode
+    }
+
+    pub fn input_tuning(&self) -> InputTuning {
+        self.input_tuning
+    }
+
+    pub fn set_input_tuning(&mut self, tuning: InputTuning) {
+        self.input_tuning = tuning;
+    }
+
+    pub fn input_preview(&self) -> InputActivationPreview {
+        self.input_preview
+    }
+
+    pub fn set_input_preview(&mut self, preview: InputActivationPreview) {
+        self.input_preview = preview;
     }
 
     pub fn display_settings(&self) -> DisplaySettings {
@@ -672,6 +732,7 @@ impl AttractModeApp {
             AppMode::MainMenu => self.tick_main_menu(input, &mut audio_commands),
             AppMode::HelpMenu => self.tick_help_menu(input, &mut audio_commands),
             AppMode::SettingsMenu => self.tick_settings_menu(input, &mut audio_commands),
+            AppMode::InputSettings => self.tick_input_settings(input),
             AppMode::GoMenu => self.tick_go_menu(input, &mut audio_commands),
             AppMode::DemoPlayback => self.tick_demo(input, &mut audio_commands),
             AppMode::Gameplay => self.tick_gameplay(input, &mut audio_commands),
@@ -830,6 +891,51 @@ impl AttractModeApp {
         }
     }
 
+    fn tick_input_settings(&mut self, input: AppInput) {
+        if input.escape {
+            self.mode = AppMode::SettingsMenu;
+            return;
+        }
+
+        if input.up {
+            self.input_settings_cursor = self.input_settings_cursor.move_by(-1);
+        }
+        if input.down {
+            self.input_settings_cursor = self.input_settings_cursor.move_by(1);
+        }
+
+        let adjustment = i8::from(input.right) - i8::from(input.left);
+        if adjustment != 0 {
+            self.adjust_selected_sensitivity(adjustment);
+        }
+
+        let reset_confirmed = (input.enter || input.space)
+            && self.input_settings_cursor == InputSettingsCursor::Reset;
+        if reset_confirmed {
+            self.input_tuning = InputTuning::default();
+        }
+    }
+
+    fn adjust_selected_sensitivity(&mut self, adjustment: i8) {
+        let adjust = |sensitivity: SensitivityPercent| {
+            if adjustment < 0 {
+                sensitivity.decrease()
+            } else {
+                sensitivity.increase()
+            }
+        };
+
+        self.input_tuning = match self.input_settings_cursor {
+            InputSettingsCursor::MouseSensitivity => self
+                .input_tuning
+                .with_mouse_sensitivity(adjust(self.input_tuning.mouse_sensitivity())),
+            InputSettingsCursor::ControllerSensitivity => self
+                .input_tuning
+                .with_controller_sensitivity(adjust(self.input_tuning.controller_sensitivity())),
+            InputSettingsCursor::Reset => self.input_tuning,
+        };
+    }
+
     fn tick_demo(&mut self, input: AppInput, audio_commands: &mut Vec<AudioCommand>) {
         if input.escape || input.enter || input.space {
             self.return_to_main_menu(audio_commands);
@@ -945,6 +1051,11 @@ impl AttractModeApp {
                 sound_fx_enabled: self.sound_fx_enabled,
                 music_enabled: self.music_enabled,
             }),
+            AppMode::InputSettings => RenderScene::InputSettings(InputSettingsScene {
+                cursor: self.input_settings_cursor,
+                tuning: self.input_tuning,
+                preview: self.input_preview,
+            }),
             AppMode::DemoPlayback => RenderScene::DemoPlayback(self.current_demo_scene()),
             AppMode::Gameplay => RenderScene::Gameplay(self.current_gameplay_scene()),
             AppMode::Boot => RenderScene::MainMenu(MainMenuScene {
@@ -981,6 +1092,10 @@ impl AttractModeApp {
             }
             SettingsMenuCursor::Display => self.cycle_display_mode(),
             SettingsMenuCursor::VideoMode => self.cycle_video_mode(),
+            SettingsMenuCursor::Input => {
+                self.mode = AppMode::InputSettings;
+                self.input_settings_cursor = InputSettingsCursor::default();
+            }
             SettingsMenuCursor::Keyboard
             | SettingsMenuCursor::Joystick
             | SettingsMenuCursor::Mouse => {}
@@ -1204,10 +1319,13 @@ mod tests {
         SKYROADS_CFG_COMPLETION_COUNT,
     };
 
+    use crate::{DirectionalActivation, SteeringActivation, ThrottleActivation, TriggerActivation};
+
     use super::{
         AppInput, AppMode, AttractModeApp, AudioCommand, ControlMode, DisplayModeCatalog,
-        DisplaySettings, GoMenuSelection, MenuCursor, RenderScene, RoadSongSelector,
-        SettingsMenuCursor, VideoMode, FIRST_ROAD_SONG_INDEX, RENDER_ROWS_BEHIND, ROAD_SONG_COUNT,
+        DisplaySettings, GoMenuSelection, InputActivationPreview, InputSettingsCursor, InputTuning,
+        MenuCursor, RenderScene, RoadSongSelector, SensitivityPercent, SettingsMenuCursor,
+        VideoMode, FIRST_ROAD_SONG_INDEX, RENDER_ROWS_BEHIND, ROAD_SONG_COUNT,
     };
 
     fn repo_root() -> PathBuf {
@@ -1248,6 +1366,45 @@ mod tests {
 
     fn enter_gameplay_from_go_menu(app: &mut AttractModeApp) -> super::AppTickResult {
         enter_go_menu(app);
+        app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        })
+    }
+
+    fn enter_settings_menu(app: &mut AttractModeApp) {
+        app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
+        app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        });
+    }
+
+    fn enter_input_settings(app: &mut AttractModeApp) -> super::AppTickResult {
+        enter_settings_menu(app);
+        for input in [
+            AppInput {
+                down: true,
+                ..AppInput::default()
+            },
+            AppInput {
+                down: true,
+                ..AppInput::default()
+            },
+            AppInput {
+                right: true,
+                ..AppInput::default()
+            },
+            AppInput {
+                right: true,
+                ..AppInput::default()
+            },
+        ] {
+            app.tick(input);
+        }
         app.tick(AppInput {
             enter: true,
             ..AppInput::default()
@@ -1519,6 +1676,195 @@ mod tests {
     }
 
     #[test]
+    fn input_entry_opens_a_focused_page_with_live_scene_values() {
+        let mut app = make_app();
+        let tuning = InputTuning::new(
+            SensitivityPercent::new(125).unwrap(),
+            SensitivityPercent::new(80).unwrap(),
+        );
+        let preview = InputActivationPreview {
+            mouse: DirectionalActivation {
+                steering: SteeringActivation::Left,
+                throttle: ThrottleActivation::Accelerate,
+            },
+            controller_stick: DirectionalActivation {
+                steering: SteeringActivation::Right,
+                throttle: ThrottleActivation::Brake,
+            },
+            controller_triggers: TriggerActivation {
+                brake: true,
+                accelerate: false,
+            },
+        };
+        app.set_input_tuning(tuning);
+        app.set_input_preview(preview);
+        skip_intro_to_main_menu(&mut app);
+
+        let page = enter_input_settings(&mut app);
+
+        assert_eq!(page.mode, AppMode::InputSettings);
+        assert_eq!(app.input_tuning(), tuning);
+        assert_eq!(app.input_preview(), preview);
+        assert_eq!(
+            page.render_scene,
+            RenderScene::InputSettings(super::InputSettingsScene {
+                cursor: InputSettingsCursor::MouseSensitivity,
+                tuning,
+                preview,
+            })
+        );
+    }
+
+    #[test]
+    fn input_settings_navigation_stops_at_the_first_and_last_rows() {
+        let mut app = make_app();
+        skip_intro_to_main_menu(&mut app);
+        enter_input_settings(&mut app);
+
+        let first = app.tick(AppInput {
+            up: true,
+            ..AppInput::default()
+        });
+        let RenderScene::InputSettings(first_scene) = first.render_scene else {
+            panic!("expected input settings page");
+        };
+        assert_eq!(first_scene.cursor, InputSettingsCursor::MouseSensitivity);
+
+        app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
+        let last = app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
+        let RenderScene::InputSettings(last_scene) = last.render_scene else {
+            panic!("expected input settings page");
+        };
+        assert_eq!(last_scene.cursor, InputSettingsCursor::Reset);
+
+        let still_last = app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
+        let RenderScene::InputSettings(still_last_scene) = still_last.render_scene else {
+            panic!("expected input settings page");
+        };
+        assert_eq!(still_last_scene.cursor, InputSettingsCursor::Reset);
+    }
+
+    #[test]
+    fn input_settings_adjust_each_sensitivity_immediately_and_saturate() {
+        let mut app = make_app();
+        app.set_input_tuning(InputTuning::new(
+            SensitivityPercent::MIN,
+            SensitivityPercent::MAX,
+        ));
+        skip_intro_to_main_menu(&mut app);
+        enter_input_settings(&mut app);
+
+        app.tick(AppInput {
+            left: true,
+            ..AppInput::default()
+        });
+        assert_eq!(
+            app.input_tuning().mouse_sensitivity(),
+            SensitivityPercent::MIN
+        );
+        let mouse_changed = app.tick(AppInput {
+            right: true,
+            ..AppInput::default()
+        });
+        let RenderScene::InputSettings(mouse_scene) = mouse_changed.render_scene else {
+            panic!("expected input settings page");
+        };
+        assert_eq!(mouse_scene.tuning.mouse_sensitivity().percent(), 55);
+        assert_eq!(
+            mouse_scene.tuning.controller_sensitivity(),
+            SensitivityPercent::MAX
+        );
+
+        app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
+        app.tick(AppInput {
+            right: true,
+            ..AppInput::default()
+        });
+        assert_eq!(
+            app.input_tuning().controller_sensitivity(),
+            SensitivityPercent::MAX
+        );
+        let controller_changed = app.tick(AppInput {
+            left: true,
+            ..AppInput::default()
+        });
+        let RenderScene::InputSettings(controller_scene) = controller_changed.render_scene else {
+            panic!("expected input settings page");
+        };
+        assert_eq!(
+            controller_scene.tuning.controller_sensitivity().percent(),
+            195
+        );
+    }
+
+    #[test]
+    fn input_settings_reset_requires_confirmation_on_the_reset_row() {
+        let mut app = make_app();
+        let custom = InputTuning::new(
+            SensitivityPercent::new(135).unwrap(),
+            SensitivityPercent::new(70).unwrap(),
+        );
+        app.set_input_tuning(custom);
+        skip_intro_to_main_menu(&mut app);
+        enter_input_settings(&mut app);
+
+        app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
+        app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
+        app.tick(AppInput {
+            left: true,
+            right: true,
+            ..AppInput::default()
+        });
+        assert_eq!(app.input_tuning(), custom);
+
+        let reset = app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        });
+        let RenderScene::InputSettings(reset_scene) = reset.render_scene else {
+            panic!("expected input settings page");
+        };
+        assert_eq!(reset_scene.cursor, InputSettingsCursor::Reset);
+        assert_eq!(reset_scene.tuning, InputTuning::default());
+    }
+
+    #[test]
+    fn escape_returns_from_input_settings_to_the_input_entry() {
+        let mut app = make_app();
+        skip_intro_to_main_menu(&mut app);
+        enter_input_settings(&mut app);
+
+        let settings = app.tick(AppInput {
+            escape: true,
+            ..AppInput::default()
+        });
+
+        assert_eq!(settings.mode, AppMode::SettingsMenu);
+        let RenderScene::SettingsMenu(scene) = settings.render_scene else {
+            panic!("expected settings menu");
+        };
+        assert_eq!(scene.cursor, SettingsMenuCursor::Input);
+    }
+
+    #[test]
     fn settings_menu_cycles_display_and_exact_video_modes() {
         let mut app = make_app();
         let full_hd_60 = video_mode(1920, 1080, 60);
@@ -1655,6 +2001,38 @@ mod tests {
     }
 
     #[test]
+    fn gameplay_confirm_restarts_immediately_after_death_without_a_prompt() {
+        let mut app = make_app();
+        skip_intro_to_main_menu(&mut app);
+        enter_gameplay_from_go_menu(&mut app);
+
+        let selected_level = app.current_level_index;
+        app.gameplay_session.ship.state = crate::ShipState::Exploded;
+        app.gameplay_session.expected_ship = app.gameplay_session.ship;
+        app.gameplay_session.explosion_timer = 2;
+        app.gameplay_session.non_alive_frame_count = 1;
+        app.gameplay_session.frame_index = 42;
+        assert!(!app.gameplay_session.post_death_animation_complete());
+
+        let restarted = app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        });
+
+        assert_eq!(restarted.mode, AppMode::Gameplay);
+        assert_eq!(app.current_level_index, selected_level);
+        assert_eq!(app.gameplay_session.ship.state, crate::ShipState::Alive);
+        assert_eq!(app.gameplay_session.explosion_timer, 0);
+        assert_eq!(app.gameplay_session.non_alive_frame_count, 0);
+        assert_eq!(app.gameplay_session.frame_index, 0);
+        let RenderScene::Gameplay(scene) = restarted.render_scene else {
+            panic!("expected restarted gameplay scene");
+        };
+        assert_eq!(scene.ship.state, crate::ShipState::Alive);
+        assert_eq!(scene.frame_index, 0);
+    }
+
+    #[test]
     fn gameplay_scene_current_row_uses_dos_eighth_tile_units() {
         let mut app = make_app();
         app.gameplay_session.ship.z_position = 3.375;
@@ -1764,6 +2142,11 @@ mod tests {
     #[test]
     fn cfg_snapshot_round_trips_control_mode_sound_and_progress() {
         let mut app = make_app();
+        let input_tuning = InputTuning::new(
+            SensitivityPercent::new(75).unwrap(),
+            SensitivityPercent::new(145).unwrap(),
+        );
+        app.set_input_tuning(input_tuning);
         let mut cfg = SkyroadsCfg {
             control_mode: ControlMode::Mouse,
             sound_enabled: false,
@@ -1777,5 +2160,6 @@ mod tests {
         assert_eq!(snapshot.control_mode, ControlMode::Mouse);
         assert!(!snapshot.sound_enabled);
         assert_eq!(snapshot.completion_counts[4], 3);
+        assert_eq!(app.input_tuning(), input_tuning);
     }
 }

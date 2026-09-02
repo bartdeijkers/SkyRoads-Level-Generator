@@ -1,7 +1,9 @@
 # Expand Controller Support
 
-Status: proposed future work; no controller implementation is claimed by this
-document.
+Status: software implementation complete through automated Linux and native
+Windows release-runtime smoke checks. Direct 8BitDo SN30 Pro X-input/Bluetooth
+on native Windows now has partial physical evidence; the required hardware
+matrix remains incomplete.
 
 External contracts last researched: 2026-09-01. Plan updated: 2026-09-02.
 
@@ -48,9 +50,65 @@ Native Steam Input API integration would add a Steamworks SDK and distribution
 boundary. If that becomes a requirement, decide it separately in an ADR before
 implementation.
 
-## Current implementation evidence
+## Implementation status
 
-The current host has a narrow raw-joystick path:
+Implemented on 2026-09-02:
+
+- device-neutral snapshots, tuned normalization, menu hysteresis, edge latching,
+  and DOS-default equivalence tests;
+- the safe SDL2 mapped-controller boundary, raw index-0 fallback, positional
+  face-button policy, typed device events, stable instance IDs, and explicit
+  sampling errors;
+- mapped-first discovery, neutral-on-disconnect replacement, startup/change
+  diagnostics, and the asset-independent `--controller-diagnostics` mode with
+  GUID, mapping, axis, and button evidence for hardware triage;
+- controller navigation in every app mode, `JOYSTICK`-only gamepad movement,
+  and the separate injected `--smoke-gamepad` flow;
+- the focused `INPUT` page, live semantic previews, strict native preference
+  parsing, change-only saves, and reset/persistence behavior;
+- root documentation and canonical Windows/Linux package notes for the exact
+  logical controls, setup paths, and unverified platform boundaries.
+
+Automated tests, strict Clippy, the Linux release build, and both Linux
+dummy-driver smoke paths pass. A Windows x86-64 MSVC release was also
+cross-linked with the packaged SDL 2.32.10 DLL, launched through native Windows
+interop on Windows build 10.0.26200.9278, and passed controller diagnostics plus
+both dummy-driver smoke paths. This evidence belongs in the implementation
+handoff rather than being treated as physical-device evidence.
+
+On 2026-09-02, with Steam fully stopped, Windows PnP identified a directly
+connected `8Bitdo SN30 Pro` over Bluetooth. Packaged SDL 2.32.10 exposed it as
+one mapped `Xbox One S Controller` with GUID
+`030044f05e040000e002000000007200`. An isolated run persisted `JOYSTICK`
+(`SKYROADS.CFG` bytes 2-3 were `01 00`). The user then confirmed D-pad and
+left-stick menu navigation, confirm/back, gameplay steering, both triggers,
+south-position jump, and one transition rather than repetition while holding a
+menu direction. The same process later observed the device absent, reselected
+it as mapped instance ID 1 when it reappeared, and exited cleanly.
+
+Controller sensitivity was exercised at `50%`, `100%`, and `200%`. Full stick
+directions and both triggers remained reachable at `50%`; light stick and
+trigger travel activated earlier at `200%`. The exact `50%` and `200%` values
+were checked in `SKYROADS-RS-INPUT.CFG`, restored after fresh process starts,
+and the in-game reset was checked both visually and on disk as `100% / 100%`.
+A deliberate gameplay power-off while steering and accelerating released both
+inputs instead of leaving either latched; reconnecting restored controller input
+without restarting the game. Firmware was not available in the queried Windows
+device properties. In a later run, driving off the road and pressing the
+south-position button after the frozen crash frame restarted the selected road;
+East/Back then exited gameplay to level selection. Completing Road 1 and
+pressing South after the final tunnel also returned to level selection. This is
+still partial evidence: controller firmware and USB equivalence remain pending.
+It does not justify a repository-owned mapping or a changelog claim.
+
+No `/dev/input` directory is exposed in the current Ubuntu 24.04 WSL2 session,
+so both WSL controller rows remain environment-blocked. Native Xbox, Steam
+Input, SN30 Pro USB, and SN30 Pro Steam/Switch rows remain unverified; the SN30
+Pro Bluetooth row is partial. WSLg mouse input also remains unverified.
+
+## Baseline implementation evidence
+
+Before this work, the host had a narrow raw-joystick path:
 
 - [`sdl.rs`](../crates/skyroads-sdl/src/sdl.rs) initializes
   `SDL_INIT_JOYSTICK`, opens SDL joystick index `0` once at startup, and reads
@@ -163,6 +221,11 @@ different letter there.
 | Gameplay | accelerate | D-pad/stick up or right trigger | `accel_input = 1` |
 | Gameplay | brake | D-pad/stick down or left trigger | `accel_input = -1` |
 | Gameplay | jump/retry | south face button | jump held during play; select edge after death/win |
+
+The DOS-exact renderer adds no separate retry or win prompt. Hardware acceptance
+should wait for the explosion, fall, or final tunnel scene, fully release the
+south button, and press it again. Retry input is valid as soon as the core enters
+a non-alive state; after a win, the fresh press returns to level selection.
 
 Normalization rules:
 
@@ -459,17 +522,17 @@ do not present proposed behavior as already implemented.
 
 ## Controller hardware acceptance matrix
 
-| Priority | Host | Controller route | Connection/mode | Expected result |
-| --- | --- | --- | --- | --- |
-| Required | Windows 11 native build | Xbox controller direct | USB | mapped once; full menu/gameplay path; unplug/reconnect safe |
-| Required | Windows 11 native build | Xbox controller direct | Bluetooth | same logical controls as USB |
-| Required | Windows 11 build launched through Steam | Xbox controller via Steam Input | gamepad emulation enabled | one Xbox-style logical device; no double input |
-| Required | Windows 11 native build | 8BitDo SN30 Pro direct | `X + Start` X-input mode, USB | mapped controller; correct stick, D-pad, triggers, face buttons |
-| Required | Windows 11 native build | 8BitDo SN30 Pro direct | `X + Start` X-input mode, Bluetooth | same logical controls as USB |
-| Required | Windows 11 build launched through Steam | 8BitDo SN30 Pro | Switch mode through Steam Input | one emulated logical device; positional face-button behavior documented |
-| Required for WSL claim | Ubuntu 24.04 WSL2 | Xbox controller direct to Linux | wired USB attached with `usbipd-win` | device visible to Linux and SDL; full menu/gameplay path |
-| Required for WSL claim | Ubuntu 24.04 WSL2 | 8BitDo SN30 Pro direct to Linux | wired X-input mode attached with `usbipd-win` | mapped or explicitly supplied mapping; full path |
-| Best effort | Windows/Linux | 8BitDo SN30 Pro direct | D-input or Switch mode without Steam | works when SDL has a verified mapping; no raw-number special case |
+| Priority | Host | Controller route | Connection/mode | Expected result | Status |
+| --- | --- | --- | --- | --- | --- |
+| Required | Windows 11 native build | Xbox controller direct | USB | mapped once; full menu/gameplay path; unplug/reconnect safe | Pending |
+| Required | Windows 11 native build | Xbox controller direct | Bluetooth | same logical controls as USB | Pending |
+| Required | Windows 11 build launched through Steam | Xbox controller via Steam Input | gamepad emulation enabled | one Xbox-style logical device; no double input | Pending |
+| Required | Windows 11 native build | 8BitDo SN30 Pro direct | `X + Start` X-input mode, USB | mapped controller; correct stick, D-pad, triggers, face buttons | Pending |
+| Required | Windows 11 native build | 8BitDo SN30 Pro direct | `X + Start` X-input mode, Bluetooth | same logical controls as USB | Partial - mapping, `JOYSTICK`, full menu/gameplay path including death retry, win return, and gameplay exit, held-menu edge, active-input neutralization/reconnect, and `50%`/`100%`/`200%` sensitivity persistence/reset observed; firmware and USB checks pending |
+| Required | Windows 11 build launched through Steam | 8BitDo SN30 Pro | Switch mode through Steam Input | one emulated logical device; positional face-button behavior documented | Pending |
+| Required for WSL claim | Ubuntu 24.04 WSL2 | Xbox controller direct to Linux | wired USB attached with `usbipd-win` | device visible to Linux and SDL; full menu/gameplay path | Environment-blocked in the current WSL session: no `/dev/input` |
+| Required for WSL claim | Ubuntu 24.04 WSL2 | 8BitDo SN30 Pro direct to Linux | wired X-input mode attached with `usbipd-win` | mapped or explicitly supplied mapping; full path | Environment-blocked in the current WSL session: no `/dev/input` |
+| Best effort | Windows/Linux | 8BitDo SN30 Pro direct | D-input or Switch mode without Steam | works when SDL has a verified mapping; no raw-number special case | Not run |
 
 For every required row, verify:
 

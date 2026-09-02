@@ -36,6 +36,10 @@ Current native build status:
 - original art, HUD assets, sound effects, and music data are wired into the native app
 - the native Rust runtime no longer requires `SKYROADS.EXE` to be present at startup
 - live gameplay and recorded demo playback both run natively
+- the SDL host has one-player logical gamepad navigation, hot-plug handling,
+  deterministic gameplay normalization, and live mouse/controller sensitivity
+  tuning; one SN30 Pro Bluetooth route has partial physical evidence, but no
+  required controller acceptance row is complete
 - visual debug modes exist for inspecting geometry, row state, and renderer behavior
 
 What is still incomplete:
@@ -102,6 +106,7 @@ The Rust workspace now contains:
 - `crates/skyroads-audio-ref`: reference audio path
 - `crates/skyroads-sdl`: SDL host used to run the native build
 - `crates/skyroads-cli`: CLI inspection and validation tools
+- `packaging`: canonical Windows and Linux release-archive instructions
 - `tools/skyroads_extract.py`: Python extractor for original DOS assets and structures
 - `tools/skyroads_dosbox_trace.py`: DOSBox-X startup/file-I/O tracer
 - `tools/skyroads_dos_oracle.py`: DOSBox-X debugger harness for capturing runtime checkpoints
@@ -134,6 +139,8 @@ cargo run -p skyroads-sdl -- --windowed .
 cargo run -p skyroads-sdl -- --fullscreen .
 cargo run -p skyroads-sdl -- --exclusive-fullscreen .
 cargo run -p skyroads-sdl -- --smoke-gameplay .
+cargo run -p skyroads-sdl -- --smoke-gamepad .
+cargo run -p skyroads-sdl -- --controller-diagnostics
 ```
 
 Notes:
@@ -144,6 +151,8 @@ Notes:
 - `cargo run -p skyroads-cli -- render-capture . DIR --x265-video VIDEO.mp4` also streams the captured `.ppm` frames into `ffmpeg` and writes a single H.265/HEVC video with `libx265`; add `--video-fps FPS` to override the default `30`
 - `cargo run -p skyroads-cli -- render-demo . DIR --x265-video VIDEO.mp4` renders the actual attract-mode gameplay demo as `.ppm` frames plus `manifest.tsv`, and can encode the same frame sequence to x265/HEVC in one run
 - `cargo run -p skyroads-cli -- render-compare BEFORE AFTER` compares two capture manifests by labeled frame hash
+- `cargo run -p skyroads-sdl -- --controller-diagnostics` initializes SDL input without loading game assets, lists each device's mapped/raw status, GUID, mapping, axis/button counts, and probe instance ID, reports the selected device, and prints normalized logical input changes; stop it with `Ctrl+C`
+- `cargo run -p skyroads-sdl -- --smoke-gamepad .` injects a logical gamepad sequence through the menu latch and gameplay conversion path; it does not test SDL discovery, mappings, hot-plugging, or physical hardware
 - if SDL2 lives outside standard search paths, set `SDL2_CONFIG` or `SDL2_LIBS` before building `skyroads-sdl`
 - the optional x265 export path expects `ffmpeg` with `libx265` support on your `PATH`
 - normal launches default to borderless desktop fullscreen at the screen's current resolution and refresh rate; `--fullscreen` and `--borderless` remain aliases for that mode
@@ -161,8 +170,16 @@ If WSLg input/audio is flaky, split testing into two layers:
 
 - portable gameplay/data validation: `cargo test` and `cargo run -p skyroads-cli -- demo-sim . 120`
 - SDL host smoke test without a visible window: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy cargo run -p skyroads-sdl -- --smoke-gameplay .` (smoke mode defaults to windowed so dummy drivers do not need fullscreen support)
+- injected controller-flow test: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy cargo run -p skyroads-sdl -- --smoke-gamepad .`
 
-The smoke test drives the native SDL host through intro -> menu -> gameplay automatically, holds throttle for a few gameplay ticks, prints a final gameplay summary, and exits non-zero if it never reaches gameplay.
+The gameplay smoke test drives the native SDL host through intro -> menu ->
+gameplay automatically, holds throttle for a few gameplay ticks, prints a final
+gameplay summary, and exits non-zero if it never reaches gameplay.
+
+The gamepad smoke separately drives intro -> menu -> level selection -> gameplay
+with logical gamepad snapshots. It proves the device-independent edge/held input
+flow, but a passing result says nothing about whether WSL can see a physical
+controller.
 
 For a real interactive WSLg session, this still works:
 
@@ -188,6 +205,7 @@ The `Controls` menu now follows the recovered DOS structure:
 - top row selects `keyboard`, `joystick`, or `mouse` control mode
 - bottom row toggles `sound effects` and `music`
 - the native extension row selects `DISPLAY` (`WINDOWED`, `BORDERLESS`, or `EXCLUSIVE`) and an exact SDL-reported `VIDEO MODE`
+- the native `INPUT` entry opens mouse/controller sensitivity controls and live activation previews
 - the menu art is composed from `SETMENU` base frame `0`, white cursor overlays `1..5`, and orange selected-state overlays `6..10`
 
 SDL only offers modes exposed by the active platform display driver. Native Windows can therefore expose a physical `3840x2160 @ 144 Hz` mode while WSLg may expose the same desktop at roughly `60 Hz`; the game never invents a mode the driver did not report.
@@ -198,11 +216,117 @@ When `mouse` control mode is selected in that menu, the SDL host follows the rec
 - move mouse up/down to throttle or brake
 - use any mouse button to jump
 
-When `joystick` control mode is selected, the SDL host reads the first SDL joystick/gamepad:
+### Controller controls
 
-- axis `0`: left/right
-- axis `1`: throttle/brake
-- button `0`: jump
+Gamepad menu navigation works in every control mode. Gameplay movement from a
+gamepad is used only when `JOYSTICK` is selected in the Controls menu.
+
+Controls are documented by position and intent because the printed face-button
+letters vary between Xbox, Nintendo-style, and 8BitDo modes:
+
+| Context | Physical control | Action |
+| --- | --- | --- |
+| Intro and menus | D-pad or left stick | Navigate |
+| Intro and menus | South face button or Start | Confirm/select |
+| Menus and gameplay | East face button or Back/View | Go back |
+| Gameplay | D-pad left/right or left-stick X | Steer |
+| Gameplay | D-pad/stick up or right trigger | Accelerate |
+| Gameplay | D-pad/stick down or left trigger | Brake |
+| Gameplay | South face button | Jump; retry after a crash; select after a win |
+
+The DOS-exact terminal paths do not add separate retry or win prompts. After an
+explosion or fall, fully release the south face button and press it again to
+retry. After the final tunnel scene settles, release the button and press it
+again to return to level selection.
+
+The host selects one active input device. It prefers the first SDL-mapped game
+controller and uses the first raw joystick only when no mapped controller is
+available. The raw fallback retains axis `0` for steering, axis `1` for
+acceleration/braking, and button `0` for jump; exact raw numbering remains
+device-specific.
+
+Additional devices are ignored while the selected device remains connected.
+Unplugging the selected device produces neutral input before the next
+simulation tick and triggers a rescan; plugging in while none is selected also
+triggers a rescan. Startup and device changes print the selected name,
+mapped/raw status, and stable instance ID. The game continues without a
+controller and warns only upon entering gameplay with `JOYSTICK` selected.
+
+### Input sensitivity
+
+Open Controls -> `INPUT` to adjust `MOUSE SENSITIVITY` and `CONTROLLER
+SENSITIVITY`. Each value ranges from `50%` through `200%` in `5%` steps:
+
+- `100%` is the DOS-faithful default
+- a higher percentage engages an axis or trigger closer to its center/rest position
+- a lower percentage requires more travel, while full deflection remains reachable
+- changes apply immediately, and the page previews mouse axes plus controller stick/trigger activation
+- `RESET TO 100%` restores both defaults
+
+Valid changes are stored in `SKYROADS-RS-INPUT.CFG` beside the game assets. The
+file is a native-host preference and does not change the DOS-compatible
+`SKYROADS.CFG`. A missing file uses `100% / 100%`; malformed, incomplete, or
+out-of-range content emits one warning and atomically falls back to those
+defaults.
+
+### Controller setup and current validation boundary
+
+The following routes remain implementation targets. The partial physical
+evidence below is not a completed hardware-support claim:
+
+- On native Windows 11, direct Xbox controllers should use SDL's mapped
+  controller path over USB or Bluetooth.
+- For an 8BitDo SN30 Pro connected directly to Windows, start it in X-input
+  mode with `X + Start` before connecting by USB or Bluetooth. Interpret face
+  buttons by position, not by their printed letters.
+- For Steam Input, launch the native Windows build through the Windows Steam
+  client and configure gamepad emulation/legacy mode. The intended result is one
+  Xbox-style logical controller. The native Steam Input API, action manifests,
+  and Steam-specific glyphs are not implemented.
+- The SN30 Pro's Switch mode is targeted only through Steam Input emulation.
+  Direct D-input or Switch mode without Steam is best effort and requires an SDL
+  mapping; there is no device-name special case.
+
+Steam's Windows virtual controller is not forwarded into WSL. WSLg provides
+display and audio integration, but it does not make Windows-paired USB devices
+available to Linux. For the WSL path, use a wired controller and
+[`usbipd-win`](https://learn.microsoft.com/windows/wsl/connect-usb):
+
+1. In an elevated Windows terminal, run `usbipd list`, note the controller's
+   bus ID, then run `usbipd bind --busid <BUSID>` once.
+2. Run `usbipd attach --wsl --busid <BUSID>` while the WSL distribution is
+   running.
+3. In WSL, verify the device with `lsusb`, then verify `/dev/input` exists and
+   that the current user can read the controller device before starting the
+   game or diagnostics command.
+
+While a USB device is attached to WSL, Windows cannot use that same device.
+Forwarding and Linux device permissions remain host setup responsibilities; the
+game reports no detected controller and continues with keyboard input when the
+guest cannot see one.
+
+As of 2026-09-02, a Windows x86-64 release using SDL 2.32.10 passes native
+startup diagnostics and both injected dummy-driver smoke paths on Windows build
+10.0.26200.9278. With Steam stopped, Windows identified an 8BitDo SN30 Pro over
+Bluetooth and SDL exposed one mapped `Xbox One S Controller` with GUID
+`030044f05e040000e002000000007200`. An isolated run persisted `JOYSTICK`, the
+user confirmed D-pad/left-stick menu navigation, confirm/back, steering, both
+triggers, jump, and non-repeating held menu navigation, and mapped reselection
+was observed after the device temporarily disappeared. Controller sensitivity
+at `50%`, `100%`, and `200%`, restart restoration, and reset were also checked
+live and against the isolated preference file. Powering off while steering and
+accelerating released both inputs, and reconnecting restored control without a
+game restart. A fresh South press after a crash restarted the selected road,
+East/Back exited gameplay to level selection, and a fresh South press after the
+final tunnel returned to level selection. Firmware and USB comparison remain
+unverified, so this is partial evidence and no required row is complete. The
+current Ubuntu 24.04 WSL2 environment also has no `/dev/input`,
+so both WSL controller rows are environment-blocked; WSLg mouse tuning remains
+unverified separately. No repository-owned controller mapping is shipped. Run
+`--controller-diagnostics` and record the OS, SDL runtime, connection mode,
+controller firmware, mapped/raw status, and selected instance ID before making
+a device-support claim. Automated smoke tests do not replace this hardware
+matrix.
 
 ## Documentation
 

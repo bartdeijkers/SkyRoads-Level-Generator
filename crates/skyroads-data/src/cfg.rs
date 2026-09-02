@@ -190,6 +190,18 @@ mod tests {
     }
 
     #[test]
+    fn joystick_mode_keeps_the_original_dos_wire_value() {
+        assert_eq!(ControlMode::Joystick.dos_value(), 1);
+        assert_eq!(ControlMode::from_dos_value(1), ControlMode::Joystick);
+
+        let cfg = SkyroadsCfg {
+            control_mode: ControlMode::Joystick,
+            ..SkyroadsCfg::default()
+        };
+        assert_eq!(&cfg.encoded_bytes()[2..4], &[1, 0]);
+    }
+
+    #[test]
     fn cfg_accepts_shorter_completion_tables_and_zero_fills_remaining_roads() {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&SKYROADS_CFG_HEADER);

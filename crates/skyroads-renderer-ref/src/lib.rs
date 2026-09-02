@@ -2,9 +2,10 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use skyroads_core::{
-    renderer_row_state, ControlMode, DemoPlaybackState, DisplayMode, GoMenuScene, HelpMenuScene,
-    IntroSequenceState, MainMenuScene, RenderScene, RoadRenderRow, SettingsMenuCursor,
-    SettingsMenuScene, VideoMode,
+    renderer_row_state, ControlMode, DemoPlaybackState, DirectionalActivation, DisplayMode,
+    GoMenuScene, HelpMenuScene, InputSettingsCursor, InputSettingsScene, IntroSequenceState,
+    MainMenuScene, RenderScene, RoadRenderRow, SettingsMenuCursor, SettingsMenuScene,
+    SteeringActivation, ThrottleActivation, VideoMode,
 };
 use skyroads_data::{
     gameplay_palettes, load_dashboard_dat_path, load_image_archive_path, load_trekdat_lzs_path,
@@ -62,12 +63,42 @@ const DEBUG_TOPDOWN_INSET_Y: i32 = 28;
 const DEBUG_TOPDOWN_INSET_W: i32 = 104;
 const DEBUG_TOPDOWN_INSET_H: i32 = 84;
 const SETTINGS_WIDGET_TOP: i32 = 146;
-const SETTINGS_WIDGET_WIDTH: i32 = 86;
+const SETTINGS_WIDGET_WIDTH: i32 = 82;
 const SETTINGS_WIDGET_HEIGHT: i32 = 22;
 const SETTINGS_WIDGET_TEXT_PADDING: i32 = 2;
+const SETTINGS_DISPLAY_CENTER_X: i32 = 76;
+const SETTINGS_VIDEO_MODE_CENTER_X: i32 = 164;
+const SETTINGS_INPUT_CENTER_X: i32 = 252;
 const _: () = {
     assert!(SETTINGS_WIDGET_TOP >= 2);
     assert!(SETTINGS_WIDGET_TOP + SETTINGS_WIDGET_HEIGHT + 2 <= FRAMEBUFFER_HEIGHT as i32);
+    assert!(SETTINGS_DISPLAY_CENTER_X - SETTINGS_WIDGET_WIDTH / 2 >= 2);
+    assert!(SETTINGS_INPUT_CENTER_X + SETTINGS_WIDGET_WIDTH / 2 + 2 <= FRAMEBUFFER_WIDTH as i32);
+};
+const INPUT_PANEL_X: i32 = 18;
+const INPUT_PANEL_Y: i32 = 14;
+const INPUT_PANEL_WIDTH: i32 = 284;
+const INPUT_PANEL_HEIGHT: i32 = 174;
+const INPUT_SETTING_ROW_X: i32 = 26;
+const INPUT_SETTING_ROW_WIDTH: i32 = 268;
+const INPUT_SETTING_ROW_HEIGHT: i32 = 19;
+const INPUT_MOUSE_ROW_TOP: i32 = 41;
+const INPUT_CONTROLLER_ROW_TOP: i32 = 64;
+const INPUT_RESET_ROW_TOP: i32 = 88;
+const INPUT_PREVIEW_ROW_TOPS: [i32; 3] = [132, 149, 166];
+const INPUT_INDICATOR_X: [i32; 4] = [75, 127, 179, 231];
+const INPUT_INDICATOR_WIDTH: i32 = 48;
+const INPUT_INDICATOR_HEIGHT: i32 = 14;
+const _: () = {
+    assert!(INPUT_PANEL_X >= 0 && INPUT_PANEL_Y >= 0);
+    assert!(INPUT_PANEL_X + INPUT_PANEL_WIDTH <= FRAMEBUFFER_WIDTH as i32);
+    assert!(INPUT_PANEL_Y + INPUT_PANEL_HEIGHT <= FRAMEBUFFER_HEIGHT as i32);
+    assert!(INPUT_SETTING_ROW_X >= INPUT_PANEL_X);
+    assert!(INPUT_SETTING_ROW_X + INPUT_SETTING_ROW_WIDTH <= INPUT_PANEL_X + INPUT_PANEL_WIDTH);
+    assert!(
+        INPUT_PREVIEW_ROW_TOPS[2] + INPUT_INDICATOR_HEIGHT <= INPUT_PANEL_Y + INPUT_PANEL_HEIGHT
+    );
+    assert!(INPUT_INDICATOR_X[3] + INPUT_INDICATOR_WIDTH <= INPUT_PANEL_X + INPUT_PANEL_WIDTH);
 };
 const GO_MENU_WORLD_ROW_TOPS: [i32; 5] = [12, 51, 90, 129, 168];
 const GO_MENU_ROAD_LINE_OFFSETS: [i32; 3] = [1, 10, 19];
@@ -87,6 +118,8 @@ const SETTINGS_SELECTED_ORANGE: RgbColor = RgbColor::new(255, 80, 0);
 const SETTINGS_WIDGET_BG: RgbColor = RgbColor::new(10, 16, 34);
 const SETTINGS_WIDGET_OUTLINE: RgbColor = RgbColor::new(76, 86, 120);
 const SETTINGS_WIDGET_TEXT_DIM: RgbColor = RgbColor::new(168, 176, 190);
+const INPUT_PANEL_BG: RgbColor = RgbColor::new(4, 7, 19);
+const INPUT_ACTIVE_BG: RgbColor = RgbColor::new(72, 20, 0);
 const TEXT_SHADOW: RgbColor = RgbColor::new(0, 0, 0);
 
 const DOS_LEFT_CELL_COLUMNS: [usize; 4] = [0, 1, 2, 3];
@@ -532,6 +565,7 @@ impl ReferenceRenderer {
             RenderScene::HelpMenu(scene) => self.render_help_menu(&mut frame, scene),
             RenderScene::GoMenu(scene) => self.render_go_menu(&mut frame, scene),
             RenderScene::SettingsMenu(scene) => self.render_settings_menu(&mut frame, scene),
+            RenderScene::InputSettings(scene) => self.render_input_settings(&mut frame, scene),
             RenderScene::DemoPlayback(scene) => {
                 self.render_play_scene_with_debug(&mut frame, scene, debug_view)
             }
@@ -551,7 +585,9 @@ impl ReferenceRenderer {
             RenderScene::MainMenu(_) => archive_vga_palette(&self.assets.intro),
             RenderScene::HelpMenu(_) => archive_vga_palette(&self.assets.help_menu),
             RenderScene::GoMenu(_) => archive_vga_palette(&self.assets.go_menu),
-            RenderScene::SettingsMenu(_) => archive_vga_palette(&self.assets.settings_menu),
+            RenderScene::SettingsMenu(_) | RenderScene::InputSettings(_) => {
+                archive_vga_palette(&self.assets.settings_menu)
+            }
             RenderScene::DemoPlayback(scene) | RenderScene::Gameplay(scene) => {
                 self.gameplay_vga_palette(scene.road_index)
             }
@@ -640,7 +676,7 @@ impl ReferenceRenderer {
             frame,
             "DISPLAY",
             display_mode_label(scene.display_settings.mode()),
-            120,
+            SETTINGS_DISPLAY_CENTER_X,
             scene.cursor == SettingsMenuCursor::Display,
             true,
         );
@@ -651,9 +687,89 @@ impl ReferenceRenderer {
             frame,
             "VIDEO MODE",
             &video_mode,
-            208,
+            SETTINGS_VIDEO_MODE_CENTER_X,
             scene.cursor == SettingsMenuCursor::VideoMode,
             video_mode_is_active,
+        );
+        self.draw_settings_choice(
+            frame,
+            "INPUT",
+            "TUNE",
+            SETTINGS_INPUT_CENTER_X,
+            scene.cursor == SettingsMenuCursor::Input,
+            true,
+        );
+    }
+
+    fn render_input_settings(&self, frame: &mut FrameBuffer320x200, scene: &InputSettingsScene) {
+        frame.clear(RgbColor::new(0, 0, 0));
+        self.draw_archive_frame(frame, &self.assets.settings_menu, 0, 1.0, 1.0);
+        frame.fill_rect(
+            INPUT_PANEL_X,
+            INPUT_PANEL_Y,
+            INPUT_PANEL_WIDTH,
+            INPUT_PANEL_HEIGHT,
+            INPUT_PANEL_BG,
+        );
+        frame.stroke_rect(
+            INPUT_PANEL_X,
+            INPUT_PANEL_Y,
+            INPUT_PANEL_WIDTH,
+            INPUT_PANEL_HEIGHT,
+            SETTINGS_WIDGET_OUTLINE,
+        );
+
+        let title = "INPUT SETTINGS";
+        let title_x = FRAMEBUFFER_WIDTH as i32 / 2 - text_pixel_width(title, 2) / 2;
+        self.draw_text_with_shadow(frame, title_x, 21, title, SETTINGS_CURSOR_WHITE, 2);
+
+        let mouse_value = format!("{}%", scene.tuning.mouse_sensitivity().percent());
+        self.draw_input_setting_row(
+            frame,
+            INPUT_MOUSE_ROW_TOP,
+            "MOUSE SENSITIVITY",
+            &mouse_value,
+            scene.cursor == InputSettingsCursor::MouseSensitivity,
+        );
+
+        let controller_value = format!("{}%", scene.tuning.controller_sensitivity().percent());
+        self.draw_input_setting_row(
+            frame,
+            INPUT_CONTROLLER_ROW_TOP,
+            "CONTROLLER SENSITIVITY",
+            &controller_value,
+            scene.cursor == InputSettingsCursor::ControllerSensitivity,
+        );
+        self.draw_input_reset_row(frame, scene.cursor == InputSettingsCursor::Reset);
+
+        let preview_title = "LIVE ACTIVATION";
+        let preview_title_x = FRAMEBUFFER_WIDTH as i32 / 2 - text_pixel_width(preview_title, 2) / 2;
+        self.draw_text_with_shadow(
+            frame,
+            preview_title_x,
+            115,
+            preview_title,
+            SETTINGS_CURSOR_WHITE,
+            2,
+        );
+        self.draw_directional_preview(
+            frame,
+            "MOUSE",
+            INPUT_PREVIEW_ROW_TOPS[0],
+            scene.preview.mouse,
+        );
+        self.draw_directional_preview(
+            frame,
+            "STICK",
+            INPUT_PREVIEW_ROW_TOPS[1],
+            scene.preview.controller_stick,
+        );
+        self.draw_trigger_preview(
+            frame,
+            "TRIGGERS",
+            INPUT_PREVIEW_ROW_TOPS[2],
+            scene.preview.controller_triggers.brake,
+            scene.preview.controller_triggers.accelerate,
         );
     }
 
@@ -1512,6 +1628,181 @@ impl ReferenceRenderer {
             value_color,
             1,
         );
+    }
+
+    fn draw_input_setting_row(
+        &self,
+        frame: &mut FrameBuffer320x200,
+        top: i32,
+        label: &str,
+        value: &str,
+        selected: bool,
+    ) {
+        let outline = if selected {
+            SETTINGS_CURSOR_WHITE
+        } else {
+            SETTINGS_WIDGET_OUTLINE
+        };
+        let label_color = if selected {
+            SETTINGS_CURSOR_WHITE
+        } else {
+            SETTINGS_WIDGET_TEXT_DIM
+        };
+
+        frame.stroke_rect(
+            INPUT_SETTING_ROW_X,
+            top,
+            INPUT_SETTING_ROW_WIDTH,
+            INPUT_SETTING_ROW_HEIGHT,
+            outline,
+        );
+        self.draw_text_with_shadow(
+            frame,
+            INPUT_SETTING_ROW_X + 7,
+            top + 7,
+            label,
+            label_color,
+            1,
+        );
+
+        let value_center_x = INPUT_SETTING_ROW_X + INPUT_SETTING_ROW_WIDTH - 31;
+        let value_x = value_center_x - text_pixel_width(value, 1) / 2;
+        self.draw_text_with_shadow(frame, value_x, top + 7, value, SETTINGS_SELECTED_ORANGE, 1);
+    }
+
+    fn draw_input_reset_row(&self, frame: &mut FrameBuffer320x200, selected: bool) {
+        let outline = if selected {
+            SETTINGS_CURSOR_WHITE
+        } else {
+            SETTINGS_WIDGET_OUTLINE
+        };
+        let text_color = if selected {
+            SETTINGS_SELECTED_ORANGE
+        } else {
+            SETTINGS_WIDGET_TEXT_DIM
+        };
+
+        frame.stroke_rect(
+            INPUT_SETTING_ROW_X,
+            INPUT_RESET_ROW_TOP,
+            INPUT_SETTING_ROW_WIDTH,
+            INPUT_SETTING_ROW_HEIGHT,
+            outline,
+        );
+        let label = "RESET TO 100%";
+        let label_x = FRAMEBUFFER_WIDTH as i32 / 2 - text_pixel_width(label, 2) / 2;
+        self.draw_text_with_shadow(
+            frame,
+            label_x,
+            INPUT_RESET_ROW_TOP + 5,
+            label,
+            text_color,
+            2,
+        );
+    }
+
+    fn draw_directional_preview(
+        &self,
+        frame: &mut FrameBuffer320x200,
+        row_label: &str,
+        top: i32,
+        activation: DirectionalActivation,
+    ) {
+        self.draw_preview_row_label(frame, row_label, top);
+        self.draw_activation_indicator(
+            frame,
+            INPUT_INDICATOR_X[0],
+            top,
+            "LEFT",
+            activation.steering == SteeringActivation::Left,
+        );
+        self.draw_activation_indicator(
+            frame,
+            INPUT_INDICATOR_X[1],
+            top,
+            "RIGHT",
+            activation.steering == SteeringActivation::Right,
+        );
+        self.draw_activation_indicator(
+            frame,
+            INPUT_INDICATOR_X[2],
+            top,
+            "BRAKE",
+            activation.throttle == ThrottleActivation::Brake,
+        );
+        self.draw_activation_indicator(
+            frame,
+            INPUT_INDICATOR_X[3],
+            top,
+            "ACCEL",
+            activation.throttle == ThrottleActivation::Accelerate,
+        );
+    }
+
+    fn draw_trigger_preview(
+        &self,
+        frame: &mut FrameBuffer320x200,
+        row_label: &str,
+        top: i32,
+        brake: bool,
+        accelerate: bool,
+    ) {
+        self.draw_preview_row_label(frame, row_label, top);
+        self.draw_activation_indicator(frame, INPUT_INDICATOR_X[2], top, "BRAKE", brake);
+        self.draw_activation_indicator(frame, INPUT_INDICATOR_X[3], top, "ACCEL", accelerate);
+    }
+
+    fn draw_preview_row_label(&self, frame: &mut FrameBuffer320x200, label: &str, top: i32) {
+        self.draw_text_with_shadow(
+            frame,
+            INPUT_SETTING_ROW_X + 2,
+            top + 5,
+            label,
+            SETTINGS_CURSOR_WHITE,
+            1,
+        );
+    }
+
+    fn draw_activation_indicator(
+        &self,
+        frame: &mut FrameBuffer320x200,
+        left: i32,
+        top: i32,
+        label: &str,
+        active: bool,
+    ) {
+        let background = if active {
+            INPUT_ACTIVE_BG
+        } else {
+            SETTINGS_WIDGET_BG
+        };
+        let outline = if active {
+            SETTINGS_SELECTED_ORANGE
+        } else {
+            SETTINGS_WIDGET_OUTLINE
+        };
+        let text_color = if active {
+            SETTINGS_SELECTED_ORANGE
+        } else {
+            SETTINGS_WIDGET_TEXT_DIM
+        };
+
+        frame.fill_rect(
+            left,
+            top,
+            INPUT_INDICATOR_WIDTH,
+            INPUT_INDICATOR_HEIGHT,
+            background,
+        );
+        frame.stroke_rect(
+            left,
+            top,
+            INPUT_INDICATOR_WIDTH,
+            INPUT_INDICATOR_HEIGHT,
+            outline,
+        );
+        let label_x = left + INPUT_INDICATOR_WIDTH / 2 - text_pixel_width(label, 1) / 2;
+        self.draw_text_with_shadow(frame, label_x, top + 5, label, text_color, 1);
     }
 
     fn draw_debug_overlay(&self, frame: &mut FrameBuffer320x200, scene: &DemoPlaybackState) {
@@ -3416,6 +3707,7 @@ fn glyph_rows(ch: char) -> Option<[u8; 5]> {
         '7' => [0b111, 0b001, 0b010, 0b010, 0b010],
         '8' => [0b111, 0b101, 0b111, 0b101, 0b111],
         '9' => [0b111, 0b101, 0b111, 0b001, 0b110],
+        '%' => [0b101, 0b001, 0b010, 0b100, 0b101],
         '.' => [0b000, 0b000, 0b000, 0b000, 0b010],
         _ => return None,
     })
@@ -3439,8 +3731,11 @@ mod tests {
     use std::path::PathBuf;
 
     use skyroads_core::{
-        AppInput, AttractModeApp, ControlMode, DisplaySettings, GoMenuScene, GoMenuSelection,
-        RenderScene, RoadRenderRow, SettingsMenuCursor, SettingsMenuScene, ShipState, VideoMode,
+        AppInput, AttractModeApp, ControlMode, DirectionalActivation, DisplaySettings, GoMenuScene,
+        GoMenuSelection, InputActivationPreview, InputSettingsCursor, InputSettingsScene,
+        InputTuning, RenderScene, RoadRenderRow, SensitivityPercent, SettingsMenuCursor,
+        SettingsMenuScene, ShipState, SteeringActivation, ThrottleActivation, TriggerActivation,
+        VideoMode,
     };
     use skyroads_data::{
         level_from_road_entry, load_demo_rec_path, load_roads_lzs_path,
@@ -3454,8 +3749,11 @@ mod tests {
         CarAtlas, DerivedShipVisualState, DosRenderSide, DosShipPipeline, FrameBuffer320x200,
         ReferenceRenderer, ShipScreenPlacement, ShipSpriteKind, DOS_SHIP_BOUNDARY_ROW_COUNT,
         DOS_SHIP_CLIP_MASK_BYTES, DOS_SHIP_SHADOW_MASK_HEIGHT, DOS_SHIP_SHADOW_MASK_WIDTH,
-        DOS_SHIP_SPRITE_WIDTH, SETTINGS_WIDGET_HEIGHT, SETTINGS_WIDGET_TEXT_PADDING,
-        SETTINGS_WIDGET_TOP, SETTINGS_WIDGET_WIDTH,
+        DOS_SHIP_SPRITE_WIDTH, INPUT_CONTROLLER_ROW_TOP, INPUT_INDICATOR_HEIGHT,
+        INPUT_INDICATOR_WIDTH, INPUT_INDICATOR_X, INPUT_MOUSE_ROW_TOP, INPUT_PANEL_HEIGHT,
+        INPUT_PANEL_WIDTH, INPUT_PANEL_X, INPUT_PANEL_Y, INPUT_PREVIEW_ROW_TOPS,
+        SETTINGS_INPUT_CENTER_X, SETTINGS_VIDEO_MODE_CENTER_X, SETTINGS_WIDGET_HEIGHT,
+        SETTINGS_WIDGET_TEXT_PADDING, SETTINGS_WIDGET_TOP, SETTINGS_WIDGET_WIDTH,
     };
 
     #[derive(Debug, Clone, Copy)]
@@ -4700,7 +4998,7 @@ mod tests {
             }
             let x = index % usize::from(full_hd_frame.width);
             let y = index / usize::from(full_hd_frame.width);
-            let video_widget_left = 208 - SETTINGS_WIDGET_WIDTH / 2;
+            let video_widget_left = SETTINGS_VIDEO_MODE_CENTER_X - SETTINGS_WIDGET_WIDTH / 2;
             let inside_video_widget = x >= video_widget_left as usize
                 && x < (video_widget_left + SETTINGS_WIDGET_WIDTH) as usize
                 && y >= SETTINGS_WIDGET_TOP as usize
@@ -4729,7 +5027,7 @@ mod tests {
         };
         let borderless = render(DisplaySettings::BorderlessDesktop);
         let exclusive = render(DisplaySettings::ExclusiveFullscreen(mode));
-        let widget_left = 208 - SETTINGS_WIDGET_WIDTH / 2;
+        let widget_left = SETTINGS_VIDEO_MODE_CENTER_X - SETTINGS_WIDGET_WIDTH / 2;
         let changed_video_pixels = (SETTINGS_WIDGET_TOP
             ..SETTINGS_WIDGET_TOP + SETTINGS_WIDGET_HEIGHT)
             .flat_map(|y| (widget_left..widget_left + SETTINGS_WIDGET_WIDTH).map(move |x| (x, y)))
@@ -4755,6 +5053,182 @@ mod tests {
             "3840X2160 AUTO"
         );
         assert!(text_pixel_width(&label, 1) <= available_width);
+        assert!(text_pixel_width("VIDEO MODE", 2) <= SETTINGS_WIDGET_WIDTH);
+    }
+
+    #[test]
+    fn settings_input_choice_uses_the_third_native_widget() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+        let render = |cursor| {
+            renderer.render_scene(&RenderScene::SettingsMenu(SettingsMenuScene {
+                cursor,
+                control_mode: ControlMode::Keyboard,
+                display_settings: DisplaySettings::default(),
+                selected_video_mode: None,
+                sound_fx_enabled: true,
+                music_enabled: true,
+            }))
+        };
+
+        let video_selected = render(SettingsMenuCursor::VideoMode);
+        let input_selected = render(SettingsMenuCursor::Input);
+        let input_outline_x = SETTINGS_INPUT_CENTER_X - SETTINGS_WIDGET_WIDTH / 2 - 2;
+
+        assert_ne!(frame_hash(&video_selected), frame_hash(&input_selected));
+        assert_ne!(
+            video_selected
+                .pixel_index(input_outline_x as usize, (SETTINGS_WIDGET_TOP - 2) as usize),
+            input_selected
+                .pixel_index(input_outline_x as usize, (SETTINGS_WIDGET_TOP - 2) as usize),
+        );
+    }
+
+    #[test]
+    fn input_settings_renders_both_percentage_values_independently() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+        let render = |tuning| {
+            renderer.render_scene(&RenderScene::InputSettings(InputSettingsScene {
+                cursor: InputSettingsCursor::MouseSensitivity,
+                tuning,
+                preview: InputActivationPreview::default(),
+            }))
+        };
+
+        let defaults = render(InputTuning::default());
+        let extremes = render(InputTuning::new(
+            SensitivityPercent::MIN,
+            SensitivityPercent::MAX,
+        ));
+        let mut mouse_value_changes = 0;
+        let mut controller_value_changes = 0;
+
+        for (index, (default_pixel, extreme_pixel)) in defaults
+            .pixels_indexed
+            .iter()
+            .zip(&extremes.pixels_indexed)
+            .enumerate()
+        {
+            if default_pixel == extreme_pixel {
+                continue;
+            }
+            let x = index % usize::from(defaults.width);
+            let y = index / usize::from(defaults.width);
+            let inside_value_column = (230..294).contains(&(x as i32));
+            let inside_mouse_value = inside_value_column
+                && (INPUT_MOUSE_ROW_TOP + 6..INPUT_MOUSE_ROW_TOP + 14).contains(&(y as i32));
+            let inside_controller_value = inside_value_column
+                && (INPUT_CONTROLLER_ROW_TOP + 6..INPUT_CONTROLLER_ROW_TOP + 14)
+                    .contains(&(y as i32));
+
+            assert!(
+                inside_mouse_value || inside_controller_value,
+                "sensitivity values changed a pixel outside their value fields at ({x}, {y})"
+            );
+            mouse_value_changes += usize::from(inside_mouse_value);
+            controller_value_changes += usize::from(inside_controller_value);
+        }
+
+        assert!(mouse_value_changes > 0);
+        assert!(controller_value_changes > 0);
+    }
+
+    #[test]
+    fn input_settings_selection_reaches_each_row_and_reset_action() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+        let render = |cursor| {
+            renderer.render_scene(&RenderScene::InputSettings(InputSettingsScene {
+                cursor,
+                tuning: InputTuning::default(),
+                preview: InputActivationPreview::default(),
+            }))
+        };
+
+        let mouse = render(InputSettingsCursor::MouseSensitivity);
+        let controller = render(InputSettingsCursor::ControllerSensitivity);
+        let reset = render(InputSettingsCursor::Reset);
+
+        assert_ne!(frame_hash(&mouse), frame_hash(&controller));
+        assert_ne!(frame_hash(&controller), frame_hash(&reset));
+        assert_ne!(frame_hash(&reset), frame_hash(&mouse));
+    }
+
+    #[test]
+    fn input_settings_preview_lights_only_the_semantic_activations() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+        let render = |preview| {
+            renderer.render_scene(&RenderScene::InputSettings(InputSettingsScene {
+                cursor: InputSettingsCursor::MouseSensitivity,
+                tuning: InputTuning::default(),
+                preview,
+            }))
+        };
+        let neutral = render(InputActivationPreview::default());
+        let active = render(InputActivationPreview {
+            mouse: DirectionalActivation {
+                steering: SteeringActivation::Left,
+                throttle: ThrottleActivation::Accelerate,
+            },
+            controller_stick: DirectionalActivation {
+                steering: SteeringActivation::Right,
+                throttle: ThrottleActivation::Brake,
+            },
+            controller_triggers: TriggerActivation {
+                brake: true,
+                accelerate: true,
+            },
+        });
+        let active_indicators = [(0, 0), (0, 3), (1, 1), (1, 2), (2, 2), (2, 3)];
+        let mut changed_by_indicator = [0_usize; 6];
+
+        for (index, (neutral_pixel, active_pixel)) in neutral
+            .pixels_indexed
+            .iter()
+            .zip(&active.pixels_indexed)
+            .enumerate()
+        {
+            if neutral_pixel == active_pixel {
+                continue;
+            }
+            let x = (index % usize::from(neutral.width)) as i32;
+            let y = (index / usize::from(neutral.width)) as i32;
+            let changed_indicator = active_indicators.iter().position(|(row, column)| {
+                let left = INPUT_INDICATOR_X[*column];
+                let top = INPUT_PREVIEW_ROW_TOPS[*row];
+                (left..left + INPUT_INDICATOR_WIDTH).contains(&x)
+                    && (top..top + INPUT_INDICATOR_HEIGHT).contains(&y)
+            });
+            let Some(changed_indicator) = changed_indicator else {
+                panic!("activation changed a pixel outside its indicator at ({x}, {y})");
+            };
+            changed_by_indicator[changed_indicator] += 1;
+        }
+
+        assert!(changed_by_indicator.into_iter().all(|count| count > 0));
+    }
+
+    #[test]
+    fn input_settings_extremes_stay_inside_the_fixed_framebuffer() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+        let frame = renderer.render_scene(&RenderScene::InputSettings(InputSettingsScene {
+            cursor: InputSettingsCursor::Reset,
+            tuning: InputTuning::new(SensitivityPercent::MIN, SensitivityPercent::MAX),
+            preview: InputActivationPreview::default(),
+        }));
+
+        assert_eq!(frame.width, 320);
+        assert_eq!(frame.height, 200);
+        assert_eq!(frame.pixels_indexed.len(), 320 * 200);
+        assert_eq!(
+            frame.palette,
+            super::archive_vga_palette(&renderer.assets().settings_menu)
+        );
+        assert!(INPUT_PANEL_X + INPUT_PANEL_WIDTH <= i32::from(frame.width));
+        assert!(INPUT_PANEL_Y + INPUT_PANEL_HEIGHT <= i32::from(frame.height));
     }
 
     #[test]

@@ -28,11 +28,17 @@ pub mod scancode {
 
 const SDL_INIT_AUDIO: u32 = 0x0000_0010;
 const SDL_INIT_JOYSTICK: u32 = 0x0000_0200;
+const SDL_INIT_GAMECONTROLLER: u32 = 0x0000_2000;
 const SDL_INIT_VIDEO: u32 = 0x0000_0020;
 const SDL_QUIT: u32 = 0x0100;
 const SDL_DISPLAYEVENT: u32 = 0x0150;
 const SDL_WINDOWEVENT: u32 = 0x0200;
 const SDL_WINDOWEVENT_DISPLAY_CHANGED: u8 = 18;
+const SDL_JOYDEVICEADDED: u32 = 0x0605;
+const SDL_JOYDEVICEREMOVED: u32 = 0x0606;
+const SDL_CONTROLLERDEVICEADDED: u32 = 0x0653;
+const SDL_CONTROLLERDEVICEREMOVED: u32 = 0x0654;
+const SDL_CONTROLLERDEVICEREMAPPED: u32 = 0x0655;
 const SDL_RENDER_TARGETS_RESET: u32 = 0x2000;
 const SDL_RENDER_DEVICE_RESET: u32 = 0x2001;
 const SDL_WINDOWPOS_CENTERED: c_int = 0x2FFF0000u32 as c_int;
@@ -46,7 +52,20 @@ const SDL_RENDERER_PRESENTVSYNC: u32 = 0x0000_0004;
 const SDL_TEXTUREACCESS_STREAMING: c_int = 1;
 const SDL_PIXELFORMAT_RGBA32: u32 = 376_840_196;
 const SDL_NUM_SCANCODES: usize = 512;
+const SDL_HINT_OVERRIDE: c_int = 2;
 const AUDIO_S16SYS: u16 = 32_784;
+const SDL_CONTROLLER_AXIS_LEFTX: c_int = 0;
+const SDL_CONTROLLER_AXIS_LEFTY: c_int = 1;
+const SDL_CONTROLLER_AXIS_TRIGGERLEFT: c_int = 4;
+const SDL_CONTROLLER_AXIS_TRIGGERRIGHT: c_int = 5;
+const SDL_CONTROLLER_BUTTON_SOUTH: c_int = 0;
+const SDL_CONTROLLER_BUTTON_EAST: c_int = 1;
+const SDL_CONTROLLER_BUTTON_BACK: c_int = 4;
+const SDL_CONTROLLER_BUTTON_START: c_int = 6;
+const SDL_CONTROLLER_BUTTON_DPAD_UP: c_int = 11;
+const SDL_CONTROLLER_BUTTON_DPAD_DOWN: c_int = 12;
+const SDL_CONTROLLER_BUTTON_DPAD_LEFT: c_int = 13;
+const SDL_CONTROLLER_BUTTON_DPAD_RIGHT: c_int = 14;
 static SDL_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 #[repr(C)]
@@ -68,6 +87,20 @@ struct SDL_Texture {
 struct SDL_Joystick {
     _private: [u8; 0],
 }
+
+#[repr(C)]
+struct SDL_GameController {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SDL_JoystickGUID {
+    data: [u8; 16],
+}
+
+const _: [(); 16] = [(); std::mem::size_of::<SDL_JoystickGUID>()];
+const _: [(); 1] = [(); std::mem::align_of::<SDL_JoystickGUID>()];
 
 #[repr(C)]
 struct SDL_Rect {
@@ -94,9 +127,33 @@ struct SDL_WindowEvent {
 const _: [(); 24] = [(); std::mem::size_of::<SDL_WindowEvent>()];
 
 #[repr(C)]
+#[derive(Clone, Copy)]
+struct SDL_JoyDeviceEvent {
+    type_: u32,
+    timestamp: u32,
+    which: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SDL_ControllerDeviceEvent {
+    type_: u32,
+    timestamp: u32,
+    which: i32,
+}
+
+const _: [(); 12] = [(); std::mem::size_of::<SDL_JoyDeviceEvent>()];
+const _: [(); 12] = [(); std::mem::size_of::<SDL_ControllerDeviceEvent>()];
+const _: [(); std::mem::align_of::<u32>()] = [(); std::mem::align_of::<SDL_JoyDeviceEvent>()];
+const _: [(); std::mem::align_of::<u32>()] =
+    [(); std::mem::align_of::<SDL_ControllerDeviceEvent>()];
+
+#[repr(C)]
 union SDL_Event {
     type_: u32,
     window: SDL_WindowEvent,
+    jdevice: SDL_JoyDeviceEvent,
+    cdevice: SDL_ControllerDeviceEvent,
     padding: [u8; 56],
     align: *mut c_void,
 }
@@ -145,11 +202,15 @@ struct SDL_AudioSpec {
 extern "C" {
     fn SDL_Init(flags: u32) -> c_int;
     fn SDL_Quit();
+    fn SDL_ClearError();
     fn SDL_GetError() -> *const c_char;
     fn SDL_GetVersion(version: *mut SdlVersion);
     fn SDL_GetCurrentVideoDriver() -> *const c_char;
     #[cfg(target_os = "windows")]
     fn SDL_SetHint(name: *const c_char, value: *const c_char) -> c_int;
+    fn SDL_SetHintWithPriority(name: *const c_char, value: *const c_char, priority: c_int)
+        -> c_int;
+    fn SDL_GetHint(name: *const c_char) -> *const c_char;
     fn SDL_CreateWindow(
         title: *const c_char,
         x: c_int,
@@ -212,10 +273,28 @@ extern "C" {
     fn SDL_GetMouseState(x: *mut c_int, y: *mut c_int) -> u32;
     fn SDL_WarpMouseInWindow(window: *mut SDL_Window, x: c_int, y: c_int);
     fn SDL_NumJoysticks() -> c_int;
+    fn SDL_JoystickNameForIndex(index: c_int) -> *const c_char;
     fn SDL_JoystickOpen(index: c_int) -> *mut SDL_Joystick;
     fn SDL_JoystickClose(joystick: *mut SDL_Joystick);
+    fn SDL_JoystickName(joystick: *mut SDL_Joystick) -> *const c_char;
+    fn SDL_JoystickGetDeviceInstanceID(device_index: c_int) -> i32;
+    fn SDL_JoystickInstanceID(joystick: *mut SDL_Joystick) -> i32;
+    fn SDL_JoystickGetDeviceGUID(device_index: c_int) -> SDL_JoystickGUID;
+    fn SDL_JoystickNumAxes(joystick: *mut SDL_Joystick) -> c_int;
+    fn SDL_JoystickNumButtons(joystick: *mut SDL_Joystick) -> c_int;
     fn SDL_JoystickGetAxis(joystick: *mut SDL_Joystick, axis: c_int) -> i16;
     fn SDL_JoystickGetButton(joystick: *mut SDL_Joystick, button: c_int) -> u8;
+    fn SDL_IsGameController(index: c_int) -> c_int;
+    fn SDL_GameControllerNameForIndex(index: c_int) -> *const c_char;
+    fn SDL_GameControllerMappingForDeviceIndex(index: c_int) -> *mut c_char;
+    fn SDL_GameControllerOpen(index: c_int) -> *mut SDL_GameController;
+    fn SDL_GameControllerClose(controller: *mut SDL_GameController);
+    fn SDL_GameControllerName(controller: *mut SDL_GameController) -> *const c_char;
+    fn SDL_GameControllerGetAttached(controller: *mut SDL_GameController) -> c_int;
+    fn SDL_GameControllerGetJoystick(controller: *mut SDL_GameController) -> *mut SDL_Joystick;
+    fn SDL_GameControllerGetAxis(controller: *mut SDL_GameController, axis: c_int) -> i16;
+    fn SDL_GameControllerGetButton(controller: *mut SDL_GameController, button: c_int) -> u8;
+    fn SDL_free(memory: *mut c_void);
     fn SDL_OpenAudioDevice(
         device: *const c_char,
         iscapture: c_int,
@@ -267,11 +346,78 @@ pub struct DisplayInfo {
     pub skipped_fullscreen_modes: usize,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PendingEvents {
     pub quit_requested: bool,
     pub renderer_reset: bool,
     pub display_changed: bool,
+    pub input_devices: Vec<InputDeviceEvent>,
+    pub input_errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceIndex(c_int);
+
+impl DeviceIndex {
+    pub fn new(value: i32) -> Result<Self> {
+        if value < 0 {
+            return Err(format!(
+                "SDL device index must be non-negative, got {value}"
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn value(self) -> i32 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JoystickInstanceId(i32);
+
+impl JoystickInstanceId {
+    fn new(value: i32) -> Result<Self> {
+        if value < 0 {
+            return Err(format!("SDL returned invalid joystick instance ID {value}"));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn value(self) -> i32 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputDeviceEvent {
+    MappedAdded(DeviceIndex),
+    MappedRemoved(JoystickInstanceId),
+    MappedRemapped(JoystickInstanceId),
+    RawAdded(DeviceIndex),
+    RawRemoved(JoystickInstanceId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputDeviceInfo {
+    pub device_index: DeviceIndex,
+    pub name: String,
+    pub mapped: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputDeviceDiagnostics {
+    pub info: InputDeviceInfo,
+    pub guid: std::result::Result<String, String>,
+    pub mapping: std::result::Result<Option<String>, String>,
+    pub opened: std::result::Result<OpenedJoystickDiagnostics, String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenedJoystickDiagnostics {
+    pub instance_id: JoystickInstanceId,
+    pub axis_count: u32,
+    pub button_count: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -286,6 +432,22 @@ pub struct JoystickState {
     pub x_axis: i16,
     pub y_axis: i16,
     pub jump_pressed: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GameControllerState {
+    pub left_x: i16,
+    pub left_y: i16,
+    pub left_trigger: u16,
+    pub right_trigger: u16,
+    pub dpad_up: bool,
+    pub dpad_down: bool,
+    pub dpad_left: bool,
+    pub dpad_right: bool,
+    pub south_pressed: bool,
+    pub east_pressed: bool,
+    pub start_pressed: bool,
+    pub back_pressed: bool,
 }
 
 impl From<Rect> for SDL_Rect {
@@ -305,6 +467,16 @@ pub struct Sdl {
 
 impl Sdl {
     pub fn init() -> Result<Self> {
+        Self::init_subsystems(
+            SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER,
+        )
+    }
+
+    pub fn init_controller_diagnostics() -> Result<Self> {
+        Self::init_subsystems(SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER)
+    }
+
+    fn init_subsystems(flags: u32) -> Result<Self> {
         if SDL_ACTIVE
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
@@ -312,18 +484,45 @@ impl Sdl {
             return Err("SDL is already initialized by this host".to_string());
         }
 
-        #[cfg(target_os = "windows")]
-        // SAFETY: Both arguments are static NUL-terminated strings, and SDL
-        // accepts this hint before the video subsystem is initialized.
+        // SDL's A/B enum values normally follow printed button labels. The
+        // application contract is positional instead: south confirms and east
+        // goes back on every controller layout.
+        // SAFETY: Both arguments are static NUL-terminated strings. SDL accepts
+        // this hint before the game-controller subsystem is initialized.
+        let positional_button_hint = c"SDL_GAMECONTROLLER_USE_BUTTON_LABELS";
         unsafe {
-            SDL_SetHint(
-                b"SDL_WINDOWS_DPI_AWARENESS\0".as_ptr().cast(),
-                b"permonitorv2\0".as_ptr().cast(),
+            SDL_SetHintWithPriority(
+                positional_button_hint.as_ptr(),
+                c"0".as_ptr(),
+                SDL_HINT_OVERRIDE,
             );
+        }
+        // SAFETY: The hint name is static and NUL-terminated. SDL owns the
+        // nullable result, which is copied immediately.
+        let effective_button_hint =
+            c_string_lossy(unsafe { SDL_GetHint(positional_button_hint.as_ptr()) });
+        if effective_button_hint.as_deref() != Some("0") {
+            SDL_ACTIVE.store(false, Ordering::Release);
+            return Err(format!(
+                "SDL_GAMECONTROLLER_USE_BUTTON_LABELS must be 0 for positional controls, but its effective value is {:?}",
+                effective_button_hint.as_deref().unwrap_or("unset")
+            ));
+        }
+
+        #[cfg(target_os = "windows")]
+        if flags & SDL_INIT_VIDEO != 0 {
+            // SAFETY: Both arguments are static NUL-terminated strings, and SDL
+            // accepts this hint before the video subsystem is initialized.
+            unsafe {
+                SDL_SetHint(
+                    c"SDL_WINDOWS_DPI_AWARENESS".as_ptr(),
+                    c"permonitorv2".as_ptr(),
+                );
+            }
         }
         // SAFETY: The flags are valid SDL subsystem bits. A successful call
         // establishes the process-wide SDL state borrowed by every wrapper.
-        let result = unsafe { SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_JOYSTICK) };
+        let result = unsafe { SDL_Init(flags) };
         if result != 0 {
             SDL_ACTIVE.store(false, Ordering::Release);
             return Err(last_error());
@@ -351,6 +550,64 @@ impl Sdl {
         c_string_lossy(driver).unwrap_or_else(|| "unknown".to_string())
     }
 
+    pub fn input_devices(&self) -> Result<Vec<InputDeviceInfo>> {
+        // SAFETY: `self` proves the joystick and game-controller subsystems are
+        // initialized. SDL returns a negative value on enumeration failure.
+        let device_count = unsafe { SDL_NumJoysticks() };
+        if device_count < 0 {
+            return Err(last_error());
+        }
+
+        let mut devices = Vec::with_capacity(device_count as usize);
+        for raw_index in 0..device_count {
+            let device_index = DeviceIndex::new(raw_index)?;
+            devices.push(input_device_info(device_index));
+        }
+        Ok(devices)
+    }
+
+    pub fn input_device_diagnostics(&self) -> Result<Vec<InputDeviceDiagnostics>> {
+        let expected_identities = input_device_identities()?;
+        ensure_diagnostic_snapshot_unchanged(&expected_identities, &input_device_identities()?)?;
+
+        let mut diagnostics = Vec::with_capacity(expected_identities.len());
+        for (device_index, expected_instance_id) in &expected_identities {
+            ensure_diagnostic_device_unchanged(*device_index, *expected_instance_id)?;
+            let info = input_device_info(*device_index);
+            ensure_diagnostic_device_unchanged(*device_index, *expected_instance_id)?;
+
+            let guid = device_guid(*device_index);
+            ensure_diagnostic_device_unchanged(*device_index, *expected_instance_id)?;
+
+            let mapping = controller_mapping(*device_index, info.mapped);
+            ensure_diagnostic_device_unchanged(*device_index, *expected_instance_id)?;
+
+            let opened = match Joystick::open(self, *device_index) {
+                Ok(joystick) if joystick.instance_id() != *expected_instance_id => {
+                    return Err(diagnostic_device_changed_error(
+                        *device_index,
+                        *expected_instance_id,
+                        joystick.instance_id(),
+                    ));
+                }
+                Ok(joystick) => joystick.diagnostics(),
+                Err(error) => Err(error),
+            };
+            ensure_diagnostic_device_unchanged(*device_index, *expected_instance_id)?;
+
+            diagnostics.push(InputDeviceDiagnostics {
+                info,
+                guid,
+                mapping,
+                opened,
+            });
+        }
+
+        ensure_diagnostic_snapshot_unchanged(&expected_identities, &input_device_identities()?)?;
+
+        Ok(diagnostics)
+    }
+
     pub fn poll_events(&self) -> PendingEvents {
         let mut pending = PendingEvents::default();
         let mut event = SDL_Event { padding: [0; 56] };
@@ -376,6 +633,28 @@ impl Sdl {
                 }
                 SDL_RENDER_TARGETS_RESET | SDL_RENDER_DEVICE_RESET => {
                     pending.renderer_reset = true;
+                }
+                SDL_CONTROLLERDEVICEADDED
+                | SDL_CONTROLLERDEVICEREMOVED
+                | SDL_CONTROLLERDEVICEREMAPPED => {
+                    // SAFETY: The checked type selects SDL_Event.cdevice, which
+                    // SDL initialized with SDL_ControllerDeviceEvent's C layout.
+                    let device_event = unsafe { event.cdevice };
+                    match decode_input_device_event(event_type, device_event.which) {
+                        Ok(Some(device_event)) => pending.input_devices.push(device_event),
+                        Ok(None) => {}
+                        Err(error) => pending.input_errors.push(error),
+                    }
+                }
+                SDL_JOYDEVICEADDED | SDL_JOYDEVICEREMOVED => {
+                    // SAFETY: The checked type selects SDL_Event.jdevice, which
+                    // SDL initialized with SDL_JoyDeviceEvent's C layout.
+                    let device_event = unsafe { event.jdevice };
+                    match decode_input_device_event(event_type, device_event.which) {
+                        Ok(Some(device_event)) => pending.input_devices.push(device_event),
+                        Ok(None) => {}
+                        Err(error) => pending.input_errors.push(error),
+                    }
                 }
                 _ => {}
             }
@@ -641,35 +920,93 @@ impl Drop for Window<'_> {
 
 pub struct Joystick<'sdl> {
     raw: *mut SDL_Joystick,
+    instance_id: JoystickInstanceId,
+    name: String,
     _sdl: PhantomData<&'sdl Sdl>,
 }
 
 impl<'sdl> Joystick<'sdl> {
-    pub fn open_first(_sdl: &'sdl Sdl) -> Result<Option<Self>> {
-        // SAFETY: `_sdl` proves the joystick subsystem remains initialized.
-        if unsafe { SDL_NumJoysticks() } <= 0 {
-            return Ok(None);
-        }
-        // SAFETY: SDL just reported at least one joystick, so index zero is a
-        // valid device index to attempt to open.
-        let raw = unsafe { SDL_JoystickOpen(0) };
+    pub fn open(_sdl: &'sdl Sdl, device_index: DeviceIndex) -> Result<Self> {
+        // SAFETY: `_sdl` proves the joystick subsystem is initialized. The
+        // caller obtained or validated this non-negative, transient index.
+        let raw = unsafe { SDL_JoystickOpen(device_index.0) };
         if raw.is_null() {
             return Err(last_error());
         }
-        Ok(Some(Self {
+
+        let instance_id = match joystick_instance_id(raw) {
+            Ok(instance_id) => instance_id,
+            Err(error) => {
+                // SAFETY: `raw` was opened successfully above and has not been
+                // transferred anywhere, so this closes it exactly once.
+                unsafe { SDL_JoystickClose(raw) };
+                return Err(error);
+            }
+        };
+        // SAFETY: `raw` is live. SDL owns the nullable name pointer, which is
+        // copied before another SDL call can invalidate it.
+        let name = c_string_lossy(unsafe { SDL_JoystickName(raw) })
+            .unwrap_or_else(|| format!("unnamed SDL joystick {}", device_index.0));
+
+        Ok(Self {
             raw,
+            instance_id,
+            name,
             _sdl: PhantomData,
-        }))
+        })
     }
 
-    pub fn state(&self) -> JoystickState {
+    pub fn state(&self) -> Result<JoystickState> {
+        clear_error();
         // SAFETY: Successful construction guarantees the joystick pointer is
         // live, and these accessors do not retain any Rust-provided memory.
-        JoystickState {
+        let state = JoystickState {
             x_axis: unsafe { SDL_JoystickGetAxis(self.raw, 0) },
             y_axis: unsafe { SDL_JoystickGetAxis(self.raw, 1) },
             jump_pressed: unsafe { SDL_JoystickGetButton(self.raw, 0) } != 0,
+        };
+        if let Some(error) = current_error() {
+            return Err(format!("could not sample raw SDL joystick: {error}"));
         }
+        Ok(state)
+    }
+
+    fn diagnostics(&self) -> Result<OpenedJoystickDiagnostics> {
+        clear_error();
+        // SAFETY: Successful construction guarantees a live joystick. The query
+        // retains no Rust-owned memory and returns a negative value on failure.
+        let axis_count = unsafe { SDL_JoystickNumAxes(self.raw) };
+        if axis_count < 0 {
+            return Err(format!(
+                "could not query SDL joystick axis count: {}",
+                last_error()
+            ));
+        }
+
+        clear_error();
+        // SAFETY: The same live joystick remains borrowed for this immediate
+        // query, which returns a negative value on failure.
+        let button_count = unsafe { SDL_JoystickNumButtons(self.raw) };
+        if button_count < 0 {
+            return Err(format!(
+                "could not query SDL joystick button count: {}",
+                last_error()
+            ));
+        }
+
+        Ok(OpenedJoystickDiagnostics {
+            instance_id: self.instance_id,
+            axis_count: axis_count as u32,
+            button_count: button_count as u32,
+        })
+    }
+
+    pub fn instance_id(&self) -> JoystickInstanceId {
+        self.instance_id
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
     }
 }
 
@@ -681,6 +1018,359 @@ impl Drop for Joystick<'_> {
             unsafe { SDL_JoystickClose(self.raw) }
         }
     }
+}
+
+struct SdlAllocatedString(*mut c_char);
+
+impl SdlAllocatedString {
+    fn copy_lossy(&self) -> String {
+        debug_assert!(!self.0.is_null());
+        // SAFETY: This wrapper is constructed only from a non-null SDL-owned,
+        // NUL-terminated mapping string and keeps it allocated through the copy.
+        unsafe { CStr::from_ptr(self.0) }
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+impl Drop for SdlAllocatedString {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: SDL allocated this mapping string and transfers ownership
+            // to the caller. SDL_free releases it exactly once.
+            unsafe { SDL_free(self.0.cast()) }
+        }
+    }
+}
+
+pub struct GameController<'sdl> {
+    raw: *mut SDL_GameController,
+    instance_id: JoystickInstanceId,
+    name: String,
+    _sdl: PhantomData<&'sdl Sdl>,
+}
+
+impl<'sdl> GameController<'sdl> {
+    pub fn open(_sdl: &'sdl Sdl, device_index: DeviceIndex) -> Result<Self> {
+        // SAFETY: `_sdl` proves the controller subsystem is initialized. This
+        // query does not open or transfer ownership of the indexed device.
+        if unsafe { SDL_IsGameController(device_index.0) } == 0 {
+            return Err(format!(
+                "SDL input device {} has no game-controller mapping",
+                device_index.0
+            ));
+        }
+
+        // SAFETY: The validated index currently names a mapped controller and
+        // SDL returns null instead of an invalid owned handle on failure.
+        let raw = unsafe { SDL_GameControllerOpen(device_index.0) };
+        if raw.is_null() {
+            return Err(last_error());
+        }
+
+        // SAFETY: The controller is live. SDL owns this borrowed joystick and
+        // keeps it valid until SDL_GameControllerClose; it must not be closed
+        // independently.
+        let joystick = unsafe { SDL_GameControllerGetJoystick(raw) };
+        if joystick.is_null() {
+            let error = last_error();
+            // SAFETY: `raw` is uniquely owned and has not escaped this method.
+            unsafe { SDL_GameControllerClose(raw) };
+            return Err(error);
+        }
+        let instance_id = match joystick_instance_id(joystick) {
+            Ok(instance_id) => instance_id,
+            Err(error) => {
+                // SAFETY: Closing the controller also releases its borrowed
+                // joystick. Neither handle escaped this method.
+                unsafe { SDL_GameControllerClose(raw) };
+                return Err(error);
+            }
+        };
+        // SAFETY: `raw` is live. The nullable SDL-owned name is copied now.
+        let name = c_string_lossy(unsafe { SDL_GameControllerName(raw) })
+            .unwrap_or_else(|| format!("unnamed SDL game controller {}", device_index.0));
+
+        Ok(Self {
+            raw,
+            instance_id,
+            name,
+            _sdl: PhantomData,
+        })
+    }
+
+    pub fn state(&self) -> Result<GameControllerState> {
+        clear_error();
+        // SAFETY: Successful construction guarantees a live controller handle.
+        // These polling functions retain no Rust memory. SDL defines triggers
+        // as non-negative; a negative value is treated as neutral defensively.
+        let state = unsafe {
+            GameControllerState {
+                left_x: SDL_GameControllerGetAxis(self.raw, SDL_CONTROLLER_AXIS_LEFTX),
+                left_y: SDL_GameControllerGetAxis(self.raw, SDL_CONTROLLER_AXIS_LEFTY),
+                left_trigger: non_negative_axis(SDL_GameControllerGetAxis(
+                    self.raw,
+                    SDL_CONTROLLER_AXIS_TRIGGERLEFT,
+                )),
+                right_trigger: non_negative_axis(SDL_GameControllerGetAxis(
+                    self.raw,
+                    SDL_CONTROLLER_AXIS_TRIGGERRIGHT,
+                )),
+                dpad_up: controller_button(self.raw, SDL_CONTROLLER_BUTTON_DPAD_UP),
+                dpad_down: controller_button(self.raw, SDL_CONTROLLER_BUTTON_DPAD_DOWN),
+                dpad_left: controller_button(self.raw, SDL_CONTROLLER_BUTTON_DPAD_LEFT),
+                dpad_right: controller_button(self.raw, SDL_CONTROLLER_BUTTON_DPAD_RIGHT),
+                south_pressed: controller_button(self.raw, SDL_CONTROLLER_BUTTON_SOUTH),
+                east_pressed: controller_button(self.raw, SDL_CONTROLLER_BUTTON_EAST),
+                start_pressed: controller_button(self.raw, SDL_CONTROLLER_BUTTON_START),
+                back_pressed: controller_button(self.raw, SDL_CONTROLLER_BUTTON_BACK),
+            }
+        };
+        if let Some(error) = current_error() {
+            return Err(format!("could not sample mapped SDL controller: {error}"));
+        }
+        Ok(state)
+    }
+
+    pub fn instance_id(&self) -> JoystickInstanceId {
+        self.instance_id
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn refresh_name(&mut self) {
+        // SAFETY: The controller remains live and owns the nullable string. We
+        // copy it immediately, retaining the last known name if SDL has none.
+        if let Some(name) = c_string_lossy(unsafe { SDL_GameControllerName(self.raw) }) {
+            self.name = name;
+        }
+    }
+
+    pub fn is_attached(&self) -> bool {
+        // SAFETY: `self.raw` remains owned by this wrapper. SDL permits this
+        // query after a removal event so callers can replace the active device.
+        unsafe { SDL_GameControllerGetAttached(self.raw) != 0 }
+    }
+}
+
+impl Drop for GameController<'_> {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            // SAFETY: This wrapper uniquely owns the controller and closes it
+            // exactly once. SDL also releases the borrowed joystick here.
+            unsafe { SDL_GameControllerClose(self.raw) }
+        }
+    }
+}
+
+fn joystick_instance_id(raw: *mut SDL_Joystick) -> Result<JoystickInstanceId> {
+    if raw.is_null() {
+        return Err("cannot query the instance ID of a null SDL joystick".to_string());
+    }
+    // SAFETY: Null was rejected and every caller supplies a live SDL-owned
+    // joystick for the duration of this immediate query.
+    JoystickInstanceId::new(unsafe { SDL_JoystickInstanceID(raw) })
+}
+
+fn input_device_info(device_index: DeviceIndex) -> InputDeviceInfo {
+    // SAFETY: The caller obtained this transient index from the current SDL
+    // enumeration. Neither query retains Rust-owned memory.
+    let mapped = unsafe { SDL_IsGameController(device_index.0) } != 0;
+    let name_ptr = if mapped {
+        // SAFETY: The current index names a mapped device for this immediate
+        // query. SDL owns the nullable returned string.
+        unsafe { SDL_GameControllerNameForIndex(device_index.0) }
+    } else {
+        // SAFETY: The current index names a joystick for this immediate query.
+        // SDL owns the nullable returned string.
+        unsafe { SDL_JoystickNameForIndex(device_index.0) }
+    };
+    let name = c_string_lossy(name_ptr)
+        .unwrap_or_else(|| format!("unnamed SDL input device {}", device_index.0));
+
+    InputDeviceInfo {
+        device_index,
+        name,
+        mapped,
+    }
+}
+
+fn input_device_identities() -> Result<Vec<(DeviceIndex, JoystickInstanceId)>> {
+    clear_error();
+    // SAFETY: Diagnostics initialize the joystick subsystem before calling this
+    // helper. SDL reports enumeration failure with a negative value.
+    let device_count = unsafe { SDL_NumJoysticks() };
+    if device_count < 0 {
+        return Err(format!(
+            "could not enumerate SDL input devices: {}",
+            last_error()
+        ));
+    }
+
+    let mut identities = Vec::with_capacity(device_count as usize);
+    for raw_index in 0..device_count {
+        let device_index = DeviceIndex::new(raw_index)?;
+        identities.push((device_index, input_device_instance_id(device_index)?));
+    }
+    Ok(identities)
+}
+
+fn input_device_instance_id(device_index: DeviceIndex) -> Result<JoystickInstanceId> {
+    clear_error();
+    // SAFETY: The caller obtained this transient index from the current SDL
+    // enumeration. SDL returns a negative ID if the index became invalid.
+    let raw_instance_id = unsafe { SDL_JoystickGetDeviceInstanceID(device_index.0) };
+    if raw_instance_id < 0 {
+        let detail =
+            current_error().unwrap_or_else(|| "the device index is no longer valid".to_string());
+        return Err(format!(
+            "could not identify SDL device index {}: {detail}",
+            device_index.0
+        ));
+    }
+    JoystickInstanceId::new(raw_instance_id)
+}
+
+fn ensure_diagnostic_device_unchanged(
+    device_index: DeviceIndex,
+    expected: JoystickInstanceId,
+) -> Result<()> {
+    let observed = input_device_instance_id(device_index).map_err(|error| {
+        format!("SDL input devices changed during diagnostics: {error}; run diagnostics again")
+    })?;
+    ensure_diagnostic_identity_matches(device_index, expected, observed)
+}
+
+fn ensure_diagnostic_identity_matches(
+    device_index: DeviceIndex,
+    expected: JoystickInstanceId,
+    observed: JoystickInstanceId,
+) -> Result<()> {
+    if expected == observed {
+        return Ok(());
+    }
+
+    Err(diagnostic_device_changed_error(
+        device_index,
+        expected,
+        observed,
+    ))
+}
+
+fn diagnostic_device_changed_error(
+    device_index: DeviceIndex,
+    expected: JoystickInstanceId,
+    observed: JoystickInstanceId,
+) -> String {
+    format!(
+        "SDL input devices changed during diagnostics: device index {} moved from instance {} to {}; run diagnostics again",
+        device_index.0, expected.0, observed.0
+    )
+}
+
+fn ensure_diagnostic_snapshot_unchanged(
+    expected: &[(DeviceIndex, JoystickInstanceId)],
+    observed: &[(DeviceIndex, JoystickInstanceId)],
+) -> Result<()> {
+    if expected == observed {
+        return Ok(());
+    }
+
+    Err(
+        "SDL input device list changed during diagnostics; run diagnostics again to collect one coherent snapshot"
+            .to_string(),
+    )
+}
+
+fn device_guid(device_index: DeviceIndex) -> Result<String> {
+    clear_error();
+    // SAFETY: The caller obtained this transient index from the current SDL
+    // enumeration. The returned GUID is a 16-byte value with the asserted C ABI.
+    let guid = unsafe { SDL_JoystickGetDeviceGUID(device_index.0) };
+    if guid.data == [0; 16] {
+        let detail = current_error().unwrap_or_else(|| {
+            "SDL returned a zero GUID; the device may have disconnected".to_string()
+        });
+        return Err(format!(
+            "could not query GUID for SDL device index {}: {detail}",
+            device_index.0
+        ));
+    }
+
+    Ok(guid_bytes_to_string(guid.data))
+}
+
+fn guid_bytes_to_string(bytes: [u8; 16]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let mut guid = String::with_capacity(32);
+    for byte in bytes {
+        guid.push(char::from(HEX[usize::from(byte >> 4)]));
+        guid.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    guid
+}
+
+fn controller_mapping(device_index: DeviceIndex, mapped: bool) -> Result<Option<String>> {
+    clear_error();
+    // SAFETY: The current enumeration produced this transient index. SDL either
+    // returns null or transfers an allocated NUL-terminated string to the caller.
+    let raw = unsafe { SDL_GameControllerMappingForDeviceIndex(device_index.0) };
+    if raw.is_null() {
+        return missing_controller_mapping(device_index, mapped, current_error());
+    }
+
+    let owned = SdlAllocatedString(raw);
+    Ok(Some(owned.copy_lossy()))
+}
+
+fn missing_controller_mapping(
+    device_index: DeviceIndex,
+    mapped: bool,
+    error: Option<String>,
+) -> Result<Option<String>> {
+    if let Some(detail) = error {
+        return Err(format!(
+            "could not query mapping for SDL device index {}: {detail}",
+            device_index.0
+        ));
+    }
+    if mapped {
+        return Err(format!(
+            "could not query mapping for SDL device index {}: SDL reported a mapped device without mapping data",
+            device_index.0
+        ));
+    }
+    Ok(None)
+}
+
+fn controller_button(raw: *mut SDL_GameController, button: c_int) -> bool {
+    debug_assert!(!raw.is_null());
+    // SAFETY: Every caller supplies a live controller owned by its wrapper and
+    // one of the declared SDL_GameControllerButton discriminants.
+    unsafe { SDL_GameControllerGetButton(raw, button) != 0 }
+}
+
+fn non_negative_axis(value: i16) -> u16 {
+    u16::try_from(value).unwrap_or(0)
+}
+
+fn decode_input_device_event(event_type: u32, which: i32) -> Result<Option<InputDeviceEvent>> {
+    let event = match event_type {
+        SDL_CONTROLLERDEVICEADDED => InputDeviceEvent::MappedAdded(DeviceIndex::new(which)?),
+        SDL_CONTROLLERDEVICEREMOVED => {
+            InputDeviceEvent::MappedRemoved(JoystickInstanceId::new(which)?)
+        }
+        SDL_CONTROLLERDEVICEREMAPPED => {
+            InputDeviceEvent::MappedRemapped(JoystickInstanceId::new(which)?)
+        }
+        SDL_JOYDEVICEADDED => InputDeviceEvent::RawAdded(DeviceIndex::new(which)?),
+        SDL_JOYDEVICEREMOVED => InputDeviceEvent::RawRemoved(JoystickInstanceId::new(which)?),
+        _ => return Ok(None),
+    };
+    Ok(Some(event))
 }
 
 pub struct Renderer<'window> {
@@ -1072,18 +1762,144 @@ fn last_error() -> String {
         .to_string()
 }
 
+fn clear_error() {
+    // SAFETY: Clearing SDL's thread-local error state has no preconditions and
+    // lets callers distinguish a legitimate zero-valued sample from failure.
+    unsafe { SDL_ClearError() }
+}
+
+fn current_error() -> Option<String> {
+    // SAFETY: SDL_GetError returns a nullable pointer to SDL-owned storage.
+    let ptr = unsafe { SDL_GetError() };
+    if ptr.is_null() {
+        return None;
+    }
+    // SAFETY: Null was rejected. SDL guarantees a NUL-terminated error string,
+    // which is copied before any later SDL call can replace it.
+    let error = unsafe { CStr::from_ptr(ptr) }.to_string_lossy();
+    if error.is_empty() {
+        None
+    } else {
+        Some(error.into_owned())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::c_void;
     use std::mem::{align_of, size_of};
     use std::ptr;
 
-    use super::{display_mode_info, SDL_DisplayMode, SDL_Event};
+    use super::{
+        decode_input_device_event, display_mode_info, ensure_diagnostic_identity_matches,
+        ensure_diagnostic_snapshot_unchanged, guid_bytes_to_string, missing_controller_mapping,
+        non_negative_axis, DeviceIndex, InputDeviceEvent, JoystickInstanceId,
+        SDL_ControllerDeviceEvent, SDL_DisplayMode, SDL_Event, SDL_JoyDeviceEvent,
+        SDL_CONTROLLERDEVICEADDED, SDL_CONTROLLERDEVICEREMAPPED, SDL_CONTROLLERDEVICEREMOVED,
+        SDL_JOYDEVICEADDED, SDL_JOYDEVICEREMOVED,
+    };
 
     #[test]
     fn event_union_matches_sdl2_size_and_pointer_alignment() {
         assert_eq!(size_of::<SDL_Event>(), 56);
         assert_eq!(align_of::<SDL_Event>(), align_of::<*mut c_void>());
+        assert_eq!(size_of::<SDL_ControllerDeviceEvent>(), 12);
+        assert_eq!(size_of::<SDL_JoyDeviceEvent>(), 12);
+        assert_eq!(align_of::<SDL_ControllerDeviceEvent>(), align_of::<u32>());
+        assert_eq!(align_of::<SDL_JoyDeviceEvent>(), align_of::<u32>());
+    }
+
+    #[test]
+    fn joystick_guid_bytes_use_sdl_lowercase_hex_notation() {
+        assert_eq!(
+            guid_bytes_to_string([
+                0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+                0x0e, 0x0f,
+            ]),
+            "000102030405060708090a0b0c0d0e0f"
+        );
+    }
+
+    #[test]
+    fn diagnostics_reject_device_identity_changes_instead_of_mixing_fields() {
+        let device_index = DeviceIndex::new(0).unwrap();
+        let original = JoystickInstanceId::new(17).unwrap();
+        let replacement = JoystickInstanceId::new(18).unwrap();
+
+        let error =
+            ensure_diagnostic_identity_matches(device_index, original, replacement).unwrap_err();
+
+        assert!(error.contains("moved from instance 17 to 18"));
+        assert!(ensure_diagnostic_snapshot_unchanged(
+            &[(device_index, original)],
+            &[(device_index, replacement)]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn mapping_query_errors_are_not_reported_as_an_unmapped_device() {
+        let device_index = DeviceIndex::new(3).unwrap();
+
+        let error = missing_controller_mapping(
+            device_index,
+            false,
+            Some("device disconnected".to_string()),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("device disconnected"));
+        assert_eq!(
+            missing_controller_mapping(device_index, false, None).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn typed_device_events_keep_transient_indices_and_stable_ids_distinct() {
+        let cases = [
+            (
+                SDL_CONTROLLERDEVICEADDED,
+                InputDeviceEvent::MappedAdded(DeviceIndex::new(7).unwrap()),
+            ),
+            (
+                SDL_CONTROLLERDEVICEREMOVED,
+                InputDeviceEvent::MappedRemoved(super::JoystickInstanceId::new(7).unwrap()),
+            ),
+            (
+                SDL_CONTROLLERDEVICEREMAPPED,
+                InputDeviceEvent::MappedRemapped(super::JoystickInstanceId::new(7).unwrap()),
+            ),
+            (
+                SDL_JOYDEVICEADDED,
+                InputDeviceEvent::RawAdded(DeviceIndex::new(7).unwrap()),
+            ),
+            (
+                SDL_JOYDEVICEREMOVED,
+                InputDeviceEvent::RawRemoved(super::JoystickInstanceId::new(7).unwrap()),
+            ),
+        ];
+
+        for (event_type, expected) in cases {
+            assert_eq!(
+                decode_input_device_event(event_type, 7).unwrap(),
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn negative_device_identifiers_are_rejected_at_the_safe_boundary() {
+        assert!(DeviceIndex::new(-1).is_err());
+        assert!(decode_input_device_event(SDL_CONTROLLERDEVICEADDED, -1).is_err());
+        assert!(decode_input_device_event(SDL_CONTROLLERDEVICEREMOVED, -1).is_err());
+    }
+
+    #[test]
+    fn mapped_trigger_samples_never_expose_negative_values() {
+        assert_eq!(non_negative_axis(-1), 0);
+        assert_eq!(non_negative_axis(0), 0);
+        assert_eq!(non_negative_axis(i16::MAX), i16::MAX as u16);
     }
 
     #[test]

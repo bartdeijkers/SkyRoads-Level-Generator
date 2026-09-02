@@ -1,6 +1,7 @@
 mod app;
 mod display;
 mod gameplay;
+mod input;
 
 use skyroads_data::{
     analyze_road_descriptor, DemoInput, DemoRecording, ExeDispatchEntry, ExeRuntimeTables,
@@ -10,14 +11,18 @@ use skyroads_data::{
 pub use app::{
     AppInput, AppMode, AppTickResult, AttractModeApp, AudioCommand, DashboardRenderState,
     DemoPlaybackState, GameplayRenderContext, GoMenuScene, GoMenuSelection, HelpMenuScene,
-    IntroSequenceState, MainMenuScene, MenuCursor, RenderScene, RoadRenderRow, SettingsMenuCursor,
-    SettingsMenuScene, ShipRenderState,
+    InputSettingsCursor, InputSettingsScene, IntroSequenceState, MainMenuScene, MenuCursor,
+    RenderScene, RoadRenderRow, SettingsMenuCursor, SettingsMenuScene, ShipRenderState,
 };
 pub use display::{DisplayMode, DisplayModeCatalog, DisplaySettings, VideoMode};
 pub use gameplay::{
     controller_state_from_demo_input, controller_state_from_dos_joystick,
     controller_state_from_dos_mouse, sample_demo_input_for_ship, ControllerState, GameSnapshot,
     GameplayEvent, GameplayFrameResult, GameplaySession, Ship, ShipState,
+};
+pub use input::{
+    DirectionalActivation, InputActivationPreview, InputTuning, InvalidSensitivityPercent,
+    SensitivityPercent, SteeringActivation, ThrottleActivation, TriggerActivation,
 };
 pub use skyroads_data::ControlMode;
 
