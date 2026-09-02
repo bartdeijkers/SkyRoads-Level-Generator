@@ -1,0 +1,166 @@
+{
+  "breakpoint_name": "renderer_entry",
+  "bundle_version": 1,
+  "checkpoint_name": "frame_04",
+  "dumps": [
+    {
+      "address": "DS:0E36",
+      "current_row": 24,
+      "length": 32,
+      "name": "renderer_state",
+      "raw_words": [
+        24,
+        80,
+        30240,
+        22139,
+        0,
+        0,
+        31027,
+        13451
+      ],
+      "road_row_group": 3,
+      "sha256": "27a02b00796ec50cae9bc19dcbc7818dbe2e3758c5697c5e4cb6eb20cb78fcb0",
+      "trekdat_slot": 0
+    },
+    {
+      "address": "DS:0B77",
+      "length": 8,
+      "name": "tile_class_by_low3",
+      "sha256": "ef91f417bfae7ed760420c3605078016dd265a85af54c18d83f22a7936c625b0",
+      "values": [
+        1,
+        2,
+        3,
+        3,
+        4,
+        4,
+        1,
+        1
+      ]
+    },
+    {
+      "address": "SS:0B7F",
+      "length": 32,
+      "name": "draw_dispatch_by_type",
+      "sha256": "a402b963d7c25a931706f749a211cf38b5d02fc183258309333a4b547acff2db",
+      "targets": [
+        11856,
+        12349,
+        11935,
+        12001,
+        12092,
+        12208,
+        15021,
+        15021,
+        15021,
+        15021,
+        15021,
+        15021,
+        15021,
+        15021,
+        15021,
+        15021
+      ]
+    },
+    {
+      "address": "SS:0E82",
+      "length": 16,
+      "name": "trekdat_segment_table",
+      "segments": [
+        6988,
+        10542,
+        12154,
+        13801,
+        15471,
+        17177,
+        18852,
+        20503
+      ],
+      "sha256": "c0674c72c6b16bb931dc6b5643036e6de9c7e8d80f4d7db27317ec37b5a2f29a"
+    },
+    {
+      "address": "A000:0000",
+      "height": 200,
+      "length": 64000,
+      "name": "vga_frame",
+      "row_stride": 320,
+      "sha256": "6fa58f8ac1f082eef7516edde63bf770f197320d9f5348dd4e33f4b0d0ba20a1",
+      "width": 320
+    },
+    {
+      "address": "DS:16C4",
+      "byte_values": [
+        5,
+        0,
+        0,
+        0,
+        5,
+        0,
+        5,
+        0,
+        5,
+        0,
+        0,
+        0,
+        5,
+        0
+      ],
+      "length": 14,
+      "name": "active_road_window",
+      "sha256": "680c63f925afcf13d39f8dcb2e73f8f460335e619d30f31d9eb37e161d494a36",
+      "word_values": [
+        5,
+        0,
+        5,
+        5,
+        5,
+        0,
+        5
+      ]
+    },
+    {
+      "address": "1B4C:0000",
+      "first_pointer_words": [
+        624,
+        636,
+        640,
+        648,
+        660,
+        692,
+        704,
+        716,
+        720,
+        728,
+        740,
+        772,
+        784,
+        796,
+        800,
+        808
+      ],
+      "length": 624,
+      "name": "active_trekdat_pointer_grid",
+      "nonzero_pointer_count": 312,
+      "pointer_word_count": 312,
+      "sha256": "e6a72c18354364fc17a9d22ac104b4f24b69f42ce3c39842d2a8fbdb51d13e15"
+    }
+  ],
+  "frame_sha256": "6fa58f8ac1f082eef7516edde63bf770f197320d9f5348dd4e33f4b0d0ba20a1",
+  "hit_index": 5,
+  "preset": "road0-first-five-renderer-frames",
+  "registers": {
+    "ax": 256,
+    "bp": 47326,
+    "bx": 6,
+    "cs": 2084,
+    "cx": 0,
+    "di": 30,
+    "ds": 3730,
+    "dx": 0,
+    "es": 3730,
+    "ip": 11523,
+    "si": 42,
+    "sp": 47290,
+    "ss": 3730
+  }
+}

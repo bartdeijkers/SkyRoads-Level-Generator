@@ -1,17 +1,20 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use skyroads_core::{
-    renderer_row_state, ControlMode, DemoPlaybackState, GoMenuScene, HelpMenuScene,
+    renderer_row_state, ControlMode, DemoPlaybackState, DisplayMode, GoMenuScene, HelpMenuScene,
     IntroSequenceState, MainMenuScene, RenderScene, RoadRenderRow, SettingsMenuCursor,
-    SettingsMenuScene,
+    SettingsMenuScene, VideoMode,
 };
 use skyroads_data::{
-    load_dashboard_dat_path, load_image_archive_path, load_trekdat_lzs_path,
+    gameplay_palettes, load_dashboard_dat_path, load_image_archive_path, load_trekdat_lzs_path,
     shipped_ship_runtime_tables, ExeShipRuntimeTables, HudFragmentPack, ImageArchive, ImageFrame,
     LevelCell, Result, RgbColor, TouchEffect, TrekdatArchive, TrekdatCellPointers, TrekdatRecord,
-    TrekdatShape, DASHBOARD_COLORS, DOS_SHIP_LANE_COUNT, DOS_SHIP_SHADOW_MASK_HEIGHT,
-    DOS_SHIP_SHADOW_MASK_WIDTH, GROUND_Y, LEVEL_CENTER_X, LEVEL_MAX_X, LEVEL_MIN_X,
-    LEVEL_TILE_STRIDE_X, ROAD_COLUMNS, SCREEN_HEIGHT, SCREEN_WIDTH,
+    TrekdatShape, DASHBOARD_PALETTE_START, DOS_JUMP_MASTER_FRAME_PIXELS, DOS_JUMP_MASTER_HEIGHT,
+    DOS_JUMP_MASTER_PIXELS, DOS_JUMP_MASTER_WIDTH, DOS_NUMBER_HEIGHT, DOS_NUMBER_PIXELS,
+    DOS_NUMBER_WIDTH, DOS_SHIP_LANE_COUNT, DOS_SHIP_SHADOW_MASK_HEIGHT, DOS_SHIP_SHADOW_MASK_WIDTH,
+    GROUND_Y, LEVEL_CENTER_X, LEVEL_MAX_X, LEVEL_MIN_X, LEVEL_TILE_STRIDE_X, ROAD_COLUMNS,
+    SCREEN_HEIGHT, SCREEN_WIDTH, SHIP_PALETTE_START, WORLD_PALETTE_START,
 };
 
 const FRAMEBUFFER_WIDTH: usize = SCREEN_WIDTH as usize;
@@ -20,13 +23,29 @@ const DASHBOARD_TOP: usize = 138;
 const HORIZON_Y: usize = 24;
 const VIEW_BOTTOM_Y: usize = DASHBOARD_TOP;
 const SHIP_SCALE: usize = 1;
-const DOS_EXPLOSION_ANIMATION_TICKS: usize = 0x2A;
-const DOS_NON_ALIVE_ANIMATION_TICKS: usize = 0x6C;
 const DOS_SHIP_SPRITE_WIDTH: usize = 29;
+const DOS_CAR_SOURCE_WIDTH: usize = 24;
+const DOS_CAR_SLOT_HEIGHT: usize = 30;
+const DOS_CAR_SLOT_BYTES: usize = DOS_CAR_SOURCE_WIDTH * DOS_CAR_SLOT_HEIGHT;
+const DOS_CAR_SPRITE_BYTES: usize = DOS_SHIP_SPRITE_WIDTH * DOS_CAR_SOURCE_WIDTH;
+const DOS_EXPLOSION_ENVELOPE_WIDTH: usize = 25;
 const DOS_SHIP_CLIP_MASK_HEIGHT: usize = 33;
 const DOS_SHIP_CLIP_MASK_BYTES: usize = DOS_SHIP_SPRITE_WIDTH * DOS_SHIP_CLIP_MASK_HEIGHT;
 const DOS_SHIP_MASK_ROW_STRIDE: usize = DOS_SHIP_SPRITE_WIDTH;
+const DOS_SHIP_BOUNDARY_ROW_COUNT: usize = 158;
+const DOS_SHIP_MIN_X: i32 = 0x6E;
+const DOS_SHIP_MAX_X: i32 = 0x1AE;
+const DOS_SHIP_BOUNDARY_CENTER_X: i32 = 0x10E;
+const DOS_SHIP_MIN_SCREEN_Y: i32 = 0x14;
+const DOS_SHIP_MAX_SCREEN_Y: i32 = 0x9D;
+const DOS_SHIP_LIFT_SPLIT_ROW: usize = 24;
+const DOS_SHIP_LIFT_BASELINE: i32 = 8;
 const DOS_SHIP_SHADOW_VARIANTS: usize = 5;
+const TRAIL_METER_X: usize = 96;
+const TRAIL_METER_Y: usize = 156;
+const TRAIL_METER_DIGITS: usize = 4;
+const JUMP_MASTER_X: usize = 203;
+const JUMP_MASTER_Y: usize = 156;
 const DOS_EXACT_SHIP_FRAME_START: usize = 18;
 const DOS_EXACT_SHIP_FRAME_COUNT: usize = 63;
 const DOS_SHIP_X_BASE_OFFSET: i32 = 0x6E;
@@ -45,8 +64,11 @@ const DEBUG_TOPDOWN_INSET_H: i32 = 84;
 const SETTINGS_WIDGET_TOP: i32 = 146;
 const SETTINGS_WIDGET_WIDTH: i32 = 86;
 const SETTINGS_WIDGET_HEIGHT: i32 = 22;
-const SETTINGS_WIDGET_STATUS_WIDTH: i32 = 28;
-const SETTINGS_WIDGET_STATUS_HEIGHT: i32 = 10;
+const SETTINGS_WIDGET_TEXT_PADDING: i32 = 2;
+const _: () = {
+    assert!(SETTINGS_WIDGET_TOP >= 2);
+    assert!(SETTINGS_WIDGET_TOP + SETTINGS_WIDGET_HEIGHT + 2 <= FRAMEBUFFER_HEIGHT as i32);
+};
 const GO_MENU_WORLD_ROW_TOPS: [i32; 5] = [12, 51, 90, 129, 168];
 const GO_MENU_ROAD_LINE_OFFSETS: [i32; 3] = [1, 10, 19];
 const GO_MENU_THUMBNAIL_X: [i32; 2] = [8, 168];
@@ -57,12 +79,6 @@ const GO_MENU_LABEL_WIDTH: i32 = 45;
 const GO_MENU_PIP_OFFSET_X: i32 = GO_MENU_LABEL_WIDTH + 2;
 const GO_MENU_PIP_SPACING: i32 = 7;
 const GO_MENU_VISIBLE_PIP_LIMIT: usize = 7;
-const PLAY_STATUS_PANEL_X: i32 = 88;
-const PLAY_STATUS_PANEL_Y: i32 = 24;
-const PLAY_STATUS_PANEL_W: i32 = 144;
-const PLAY_STATUS_PANEL_H: i32 = 28;
-const PLAY_STATUS_PANEL_BG: RgbColor = RgbColor::new(10, 16, 34);
-const PLAY_STATUS_PANEL_OUTLINE: RgbColor = RgbColor::new(76, 86, 120);
 const GO_MENU_SELECTION_COLOR: RgbColor = RgbColor::new(255, 185, 64);
 const GO_MENU_SELECTION_OUTLINE: RgbColor = RgbColor::new(255, 255, 255);
 
@@ -141,6 +157,7 @@ struct ProjectedRoadSlice {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CarAtlas {
     explosion_frames: Vec<ImageFrame>,
+    exact_explosion_frames_raw: Vec<ImageFrame>,
     exact_ship_frames_raw: Vec<ImageFrame>,
     exact_ship_frames: Vec<ImageFrame>,
     alive_left: Vec<ImageFrame>,
@@ -173,6 +190,7 @@ struct DerivedShipVisualState {
     jumping: bool,
     explosion_frame: usize,
     exact_ship_frame_index: Option<usize>,
+    thrust_phase: usize,
     on_surface: bool,
 }
 
@@ -188,6 +206,23 @@ struct ShipScreenPlacement {
     shadow_center_y: i32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SpriteClipPlacement {
+    destination_x: i32,
+    destination_y: i32,
+    mask_offset_x: usize,
+    mask_offset_y: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DebugMapLayout {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    large: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DosShipPipeline {
     placement: ShipScreenPlacement,
@@ -197,38 +232,109 @@ struct DosShipPipeline {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VgaPalette {
+    colors: [RgbColor; 256],
+}
+
+impl VgaPalette {
+    pub fn black() -> Self {
+        Self {
+            colors: [RgbColor::new(0, 0, 0); 256],
+        }
+    }
+
+    pub fn from_colors(colors: &[RgbColor]) -> Self {
+        let mut palette = Self::black();
+        for (destination, source) in palette.colors.iter_mut().zip(colors.iter().copied()) {
+            *destination = source;
+        }
+        palette
+    }
+
+    pub fn colors(&self) -> &[RgbColor; 256] {
+        &self.colors
+    }
+
+    pub fn color(&self, index: u8) -> RgbColor {
+        self.colors[usize::from(index)]
+    }
+}
+
+impl Default for VgaPalette {
+    fn default() -> Self {
+        Self::black()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameBuffer320x200 {
     pub width: u16,
     pub height: u16,
-    pub pixels_rgba: Vec<u8>,
+    pub pixels_indexed: Vec<u8>,
+    pub palette: VgaPalette,
+    color_indices: BTreeMap<RgbColor, u8>,
 }
 
 impl FrameBuffer320x200 {
     pub fn new() -> Self {
+        Self::with_palette(VgaPalette::black())
+    }
+
+    pub fn with_palette(palette: VgaPalette) -> Self {
+        let color_indices = palette_color_indices(&palette);
         Self {
             width: SCREEN_WIDTH,
             height: SCREEN_HEIGHT,
-            pixels_rgba: vec![0; FRAMEBUFFER_WIDTH * FRAMEBUFFER_HEIGHT * 4],
+            pixels_indexed: vec![0; FRAMEBUFFER_WIDTH * FRAMEBUFFER_HEIGHT],
+            palette,
+            color_indices,
         }
+    }
+
+    pub fn set_palette(&mut self, palette: VgaPalette) {
+        self.color_indices = palette_color_indices(&palette);
+        self.palette = palette;
+    }
+
+    pub fn to_rgba(&self) -> Vec<u8> {
+        let mut rgba = Vec::with_capacity(self.pixels_indexed.len() * 4);
+        for index in &self.pixels_indexed {
+            let color = self.palette.color(*index);
+            rgba.extend_from_slice(&[color.r, color.g, color.b, 255]);
+        }
+        rgba
+    }
+
+    pub fn pixel_index(&self, x: usize, y: usize) -> Option<u8> {
+        if x >= FRAMEBUFFER_WIDTH || y >= FRAMEBUFFER_HEIGHT {
+            return None;
+        }
+        Some(self.pixels_indexed[y * FRAMEBUFFER_WIDTH + x])
+    }
+
+    pub fn pixel_color(&self, x: usize, y: usize) -> Option<RgbColor> {
+        self.pixel_index(x, y)
+            .map(|index| self.palette.color(index))
     }
 
     pub fn clear(&mut self, color: RgbColor) {
-        for pixel in self.pixels_rgba.chunks_exact_mut(4) {
-            pixel[0] = color.r;
-            pixel[1] = color.g;
-            pixel[2] = color.b;
-            pixel[3] = 255;
-        }
+        let color_index = self.resolve_color_index(color);
+        self.pixels_indexed.fill(color_index);
     }
 
     fn fill_rect(&mut self, x: i32, y: i32, width: i32, height: i32, color: RgbColor) {
+        let color_index = self.resolve_color_index(color);
+        self.fill_rect_index(x, y, width, height, color_index);
+    }
+
+    fn fill_rect_index(&mut self, x: i32, y: i32, width: i32, height: i32, color_index: u8) {
         let x0 = x.max(0) as usize;
         let y0 = y.max(0) as usize;
         let x1 = (x + width).min(FRAMEBUFFER_WIDTH as i32).max(0) as usize;
         let y1 = (y + height).min(FRAMEBUFFER_HEIGHT as i32).max(0) as usize;
         for yy in y0..y1 {
             for xx in x0..x1 {
-                self.set_pixel(xx, yy, color);
+                self.set_pixel_index(xx, yy, color_index);
             }
         }
     }
@@ -246,14 +352,15 @@ impl FrameBuffer320x200 {
     }
 
     fn set_pixel(&mut self, x: usize, y: usize, color: RgbColor) {
+        let color_index = self.resolve_color_index(color);
+        self.set_pixel_index(x, y, color_index);
+    }
+
+    fn set_pixel_index(&mut self, x: usize, y: usize, color_index: u8) {
         if x >= FRAMEBUFFER_WIDTH || y >= FRAMEBUFFER_HEIGHT {
             return;
         }
-        let offset = (y * FRAMEBUFFER_WIDTH + x) * 4;
-        self.pixels_rgba[offset] = color.r;
-        self.pixels_rgba[offset + 1] = color.g;
-        self.pixels_rgba[offset + 2] = color.b;
-        self.pixels_rgba[offset + 3] = 255;
+        self.pixels_indexed[y * FRAMEBUFFER_WIDTH + x] = color_index;
     }
 
     fn blend_pixel(&mut self, x: usize, y: usize, color: RgbColor, alpha: f32) {
@@ -261,32 +368,61 @@ impl FrameBuffer320x200 {
             return;
         }
         let alpha = alpha.clamp(0.0, 1.0);
-        let offset = (y * FRAMEBUFFER_WIDTH + x) * 4;
-        let dr = self.pixels_rgba[offset] as f32;
-        let dg = self.pixels_rgba[offset + 1] as f32;
-        let db = self.pixels_rgba[offset + 2] as f32;
-        self.pixels_rgba[offset] = (dr * (1.0 - alpha) + color.r as f32 * alpha).round() as u8;
-        self.pixels_rgba[offset + 1] = (dg * (1.0 - alpha) + color.g as f32 * alpha).round() as u8;
-        self.pixels_rgba[offset + 2] = (db * (1.0 - alpha) + color.b as f32 * alpha).round() as u8;
-        self.pixels_rgba[offset + 3] = 255;
+        let destination = self
+            .pixel_color(x, y)
+            .unwrap_or_else(|| RgbColor::new(0, 0, 0));
+        let blended = RgbColor::new(
+            (destination.r as f32 * (1.0 - alpha) + color.r as f32 * alpha).round() as u8,
+            (destination.g as f32 * (1.0 - alpha) + color.g as f32 * alpha).round() as u8,
+            (destination.b as f32 * (1.0 - alpha) + color.b as f32 * alpha).round() as u8,
+        );
+        self.set_pixel(x, y, blended);
     }
 
-    fn darken_pixel(&mut self, x: i32, y: i32, factor: f32) {
-        if x < 0 || y < 0 {
-            return;
+    fn resolve_color_index(&self, color: RgbColor) -> u8 {
+        if let Some(index) = self.color_indices.get(&color) {
+            return *index;
         }
-        let x = x as usize;
-        let y = y as usize;
-        if x >= FRAMEBUFFER_WIDTH || y >= FRAMEBUFFER_HEIGHT {
-            return;
-        }
-        let factor = factor.clamp(0.0, 1.0);
-        let offset = (y * FRAMEBUFFER_WIDTH + x) * 4;
-        self.pixels_rgba[offset] = (self.pixels_rgba[offset] as f32 * factor).round() as u8;
-        self.pixels_rgba[offset + 1] = (self.pixels_rgba[offset + 1] as f32 * factor).round() as u8;
-        self.pixels_rgba[offset + 2] = (self.pixels_rgba[offset + 2] as f32 * factor).round() as u8;
-        self.pixels_rgba[offset + 3] = 255;
+
+        self.palette
+            .colors()
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, candidate)| color_distance_squared(color, **candidate))
+            .map(|(index, _)| index as u8)
+            .unwrap_or(0)
     }
+}
+
+impl Default for FrameBuffer320x200 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn palette_color_indices(palette: &VgaPalette) -> BTreeMap<RgbColor, u8> {
+    let mut indices = BTreeMap::new();
+    for (index, color) in palette.colors().iter().copied().enumerate() {
+        indices.entry(color).or_insert(index as u8);
+    }
+    indices
+}
+
+fn color_distance_squared(left: RgbColor, right: RgbColor) -> u32 {
+    let red = i32::from(left.r) - i32::from(right.r);
+    let green = i32::from(left.g) - i32::from(right.g);
+    let blue = i32::from(left.b) - i32::from(right.b);
+    (red * red + green * green + blue * blue) as u32
+}
+
+fn archive_vga_palette(archive: &ImageArchive) -> VgaPalette {
+    archive
+        .frames
+        .iter()
+        .flatten()
+        .next()
+        .map(|frame| VgaPalette::from_colors(&frame.palette.colors))
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -299,6 +435,8 @@ pub struct AttractModeAssets {
     pub go_menu: ImageArchive,
     pub cars: ImageArchive,
     pub worlds: Vec<ImageArchive>,
+    /// Full 256-color DOS gameplay VGA palette per world.
+    pub gameplay_palettes: Vec<Vec<RgbColor>>,
     pub dashboard: ImageArchive,
     pub trekdat: TrekdatArchive,
     pub oxygen_gauge: HudFragmentPack,
@@ -313,6 +451,7 @@ impl AttractModeAssets {
         let worlds = (0..=9)
             .map(|index| load_image_archive_path(source_root.join(format!("WORLD{index}.LZS"))))
             .collect::<Result<Vec<_>>>()?;
+        let gameplay_palettes = gameplay_palettes(source_root)?;
         Ok(Self {
             intro: load_image_archive_path(source_root.join("INTRO.LZS"))?,
             anim: load_image_archive_path(source_root.join("ANIM.LZS"))?,
@@ -322,6 +461,7 @@ impl AttractModeAssets {
             go_menu: load_image_archive_path(source_root.join("GOMENU.LZS"))?,
             cars: load_image_archive_path(source_root.join("CARS.LZS"))?,
             worlds,
+            gameplay_palettes,
             dashboard: load_image_archive_path(source_root.join("DASHBRD.LZS"))?,
             trekdat: load_trekdat_lzs_path(source_root.join("TREKDAT.LZS"))?,
             oxygen_gauge: load_dashboard_dat_path(source_root.join("OXY_DISP.DAT"))?,
@@ -385,7 +525,7 @@ impl ReferenceRenderer {
         scene: &RenderScene,
         debug_view: DebugViewMode,
     ) -> FrameBuffer320x200 {
-        let mut frame = FrameBuffer320x200::new();
+        let mut frame = FrameBuffer320x200::with_palette(self.palette_for_scene(scene));
         match scene {
             RenderScene::Intro(scene) => self.render_intro(&mut frame, scene),
             RenderScene::MainMenu(scene) => self.render_main_menu(&mut frame, scene),
@@ -400,6 +540,31 @@ impl ReferenceRenderer {
             }
         }
         frame
+    }
+
+    fn palette_for_scene(&self, scene: &RenderScene) -> VgaPalette {
+        match scene {
+            RenderScene::Intro(_) => archive_vga_palette(&self.assets.intro),
+            // The DOS main-menu path reloads INTRO after MAINMENU because the
+            // intro image is the full-screen background. MAINMENU only carries
+            // a three-color overlay palette and cannot color that background.
+            RenderScene::MainMenu(_) => archive_vga_palette(&self.assets.intro),
+            RenderScene::HelpMenu(_) => archive_vga_palette(&self.assets.help_menu),
+            RenderScene::GoMenu(_) => archive_vga_palette(&self.assets.go_menu),
+            RenderScene::SettingsMenu(_) => archive_vga_palette(&self.assets.settings_menu),
+            RenderScene::DemoPlayback(scene) | RenderScene::Gameplay(scene) => {
+                self.gameplay_vga_palette(scene.road_index)
+            }
+        }
+    }
+
+    fn gameplay_vga_palette(&self, road_index: usize) -> VgaPalette {
+        self.assets
+            .gameplay_palettes
+            .get(road_index)
+            .or_else(|| self.assets.gameplay_palettes.first())
+            .map(|colors| VgaPalette::from_colors(colors))
+            .unwrap_or_default()
     }
 
     fn render_intro(&self, frame: &mut FrameBuffer320x200, scene: &IntroSequenceState) {
@@ -429,9 +594,6 @@ impl ReferenceRenderer {
         if scene.title_progress > 0.0 {
             self.draw_archive_frame_reveal(frame, &self.assets.intro, 1, scene.title_progress, 1.0);
         }
-        if scene.title_progress >= 0.98 && scene.credit_frame_index.is_none() {
-            self.draw_branding(frame, 186, 1, 0.8);
-        }
     }
 
     fn render_main_menu(&self, frame: &mut FrameBuffer320x200, scene: &MainMenuScene) {
@@ -445,7 +607,6 @@ impl ReferenceRenderer {
             1.0,
             1.0,
         );
-        self.draw_branding(frame, 184, 2, 1.0);
     }
 
     fn render_help_menu(&self, frame: &mut FrameBuffer320x200, scene: &HelpMenuScene) {
@@ -475,19 +636,24 @@ impl ReferenceRenderer {
         if let Some(frame_index) = scene.cursor.setmenu_overlay_frame_index() {
             self.draw_archive_frame(frame, &self.assets.settings_menu, frame_index, 1.0, 1.0);
         }
-        self.draw_settings_display_toggle(
+        self.draw_settings_choice(
             frame,
-            "FULLSCREEN",
+            "DISPLAY",
+            display_mode_label(scene.display_settings.mode()),
             120,
-            scene.display_settings.fullscreen,
-            scene.cursor == SettingsMenuCursor::Fullscreen,
+            scene.cursor == SettingsMenuCursor::Display,
+            true,
         );
-        self.draw_settings_display_toggle(
+        let video_mode = video_mode_label(scene.selected_video_mode);
+        let video_mode_is_active = scene.selected_video_mode.is_some()
+            && scene.display_settings.mode() == DisplayMode::ExclusiveFullscreen;
+        self.draw_settings_choice(
             frame,
-            "BORDERLESS",
+            "VIDEO MODE",
+            &video_mode,
             208,
-            scene.display_settings.borderless,
-            scene.cursor == SettingsMenuCursor::Borderless,
+            scene.cursor == SettingsMenuCursor::VideoMode,
+            video_mode_is_active,
         );
     }
 
@@ -499,7 +665,7 @@ impl ReferenceRenderer {
     }
 
     fn render_play_scene(&self, frame: &mut FrameBuffer320x200, scene: &DemoPlaybackState) {
-        let ship_visual = derive_ship_visual_state(scene, &self.assets.dos_ship_tables);
+        let ship_visual = derive_ship_visual_state(scene);
         let road_coverage = self.build_dos_road_coverage_frame(scene);
         let mut ship_pipeline = build_dos_ship_pipeline(
             scene,
@@ -508,36 +674,31 @@ impl ReferenceRenderer {
             &ship_visual,
         );
         frame.clear(RgbColor::new(0, 0, 0));
-        let world = self
-            .assets
-            .worlds
-            .get(scene.world_index)
-            .or_else(|| self.assets.worlds.first());
-        if let Some(world) = world {
-            self.draw_archive_frame(frame, world, 0, 1.0, 1.0);
-        }
+        self.draw_world_background(frame, scene.world_index);
         self.draw_demo_rows_before_ship(frame, scene);
-        self.draw_ship_shadow(frame, &ship_visual, &ship_pipeline);
+        self.draw_ship_shadow(frame, scene, &ship_visual, &ship_pipeline);
         self.draw_ship_sprite(frame, scene.frame_index, &ship_visual, &mut ship_pipeline);
         self.draw_demo_rows_after_ship(frame, scene);
-        self.draw_archive_frame(frame, &self.assets.dashboard, 0, 1.0, 1.0);
-        self.draw_gauge(
+        self.draw_indexed_archive_frame(frame, &self.assets.dashboard, 0, DASHBOARD_PALETTE_START);
+        self.draw_lift_indicator(frame, scene.dashboard.lift_indicator_visible_count);
+        let trail_meter = usize::from(scene.gravity.saturating_sub(3)) * 100;
+        self.draw_trail_meter(frame, trail_meter);
+        self.draw_jump_master(frame, scene.dashboard.jump_o_master_in_use);
+        self.draw_segment_gauge(
             &mut *frame,
             &self.assets.oxygen_gauge,
-            scene.snapshot.oxygen_percent,
+            scene.dashboard.oxygen_percent,
         );
-        self.draw_gauge(
+        self.draw_segment_gauge(
             &mut *frame,
             &self.assets.fuel_gauge,
-            scene.snapshot.fuel_percent,
+            scene.dashboard.fuel_percent,
         );
-        let speed = scene.snapshot.z_velocity / (0x2AAA as f64 / 0x10000 as f64);
-        self.draw_gauge(&mut *frame, &self.assets.speed_gauge, speed);
-        if scene.did_win {
-            self.draw_play_status_overlay(frame, "LEVEL CLEAR", "ENTER FOR MENU");
-        } else if should_draw_game_over_overlay(scene) {
-            self.draw_play_status_overlay(frame, "CRASHED", "ENTER TO RETRY");
-        }
+        self.draw_speed_gauge(
+            &mut *frame,
+            &self.assets.speed_gauge,
+            scene.dashboard.speed_gauge_visible_count,
+        );
     }
 
     fn render_play_scene_with_debug(
@@ -566,14 +727,24 @@ impl ReferenceRenderer {
         frame: &mut FrameBuffer320x200,
         scene: &DemoPlaybackState,
     ) {
-        let Some(record) = self.assets.trekdat.records.get(scene.current_row & 7) else {
+        let Some(record) = self
+            .assets
+            .trekdat
+            .records
+            .get(scene.render_context.active_trekdat_slot)
+        else {
             return;
         };
         let _ = draw_dos_trekdat_pass(frame, scene, record, DosRoadPhase::BeforeShip);
     }
 
     fn draw_demo_rows_after_ship(&self, frame: &mut FrameBuffer320x200, scene: &DemoPlaybackState) {
-        let Some(record) = self.assets.trekdat.records.get(scene.current_row & 7) else {
+        let Some(record) = self
+            .assets
+            .trekdat
+            .records
+            .get(scene.render_context.active_trekdat_slot)
+        else {
             return;
         };
         let _ = draw_dos_trekdat_pass(frame, scene, record, DosRoadPhase::AfterShip);
@@ -629,8 +800,9 @@ impl ReferenceRenderer {
         );
 
         let label_x = GO_MENU_LABEL_X[world_column];
-        let label_y =
-            GO_MENU_WORLD_ROW_TOPS[world_row] + GO_MENU_ROAD_LINE_OFFSETS[selection.road_index_in_world] - 1;
+        let label_y = GO_MENU_WORLD_ROW_TOPS[world_row]
+            + GO_MENU_ROAD_LINE_OFFSETS[selection.road_index_in_world]
+            - 1;
         frame.stroke_rect(
             label_x - 3,
             label_y - 1,
@@ -647,43 +819,17 @@ impl ReferenceRenderer {
         );
     }
 
-    fn draw_play_status_overlay(&self, frame: &mut FrameBuffer320x200, title: &str, prompt: &str) {
-        frame.fill_rect(
-            PLAY_STATUS_PANEL_X,
-            PLAY_STATUS_PANEL_Y,
-            PLAY_STATUS_PANEL_W,
-            PLAY_STATUS_PANEL_H,
-            PLAY_STATUS_PANEL_BG,
-        );
-        frame.stroke_rect(
-            PLAY_STATUS_PANEL_X,
-            PLAY_STATUS_PANEL_Y,
-            PLAY_STATUS_PANEL_W,
-            PLAY_STATUS_PANEL_H,
-            PLAY_STATUS_PANEL_OUTLINE,
-        );
-        self.draw_text_centered(
-            frame,
-            title,
-            PLAY_STATUS_PANEL_Y + 4,
-            GO_MENU_SELECTION_COLOR,
-            2,
-        );
-        self.draw_text_centered(
-            frame,
-            prompt,
-            PLAY_STATUS_PANEL_Y + 17,
-            SETTINGS_CURSOR_WHITE,
-            1,
-        );
-    }
-
     fn build_dos_road_coverage_frame(
         &self,
         scene: &DemoPlaybackState,
     ) -> Option<FrameBuffer320x200> {
-        let record = self.assets.trekdat.records.get(scene.current_row & 7)?;
-        let mut coverage = FrameBuffer320x200::new();
+        let record = self
+            .assets
+            .trekdat
+            .records
+            .get(scene.render_context.active_trekdat_slot)?;
+        let mut coverage =
+            FrameBuffer320x200::with_palette(self.gameplay_vga_palette(scene.world_index));
         coverage.clear(RgbColor::new(0, 0, 0));
         let _ = draw_dos_trekdat_pass(&mut coverage, scene, record, DosRoadPhase::BeforeShip);
         let _ = draw_dos_trekdat_pass(&mut coverage, scene, record, DosRoadPhase::AfterShip);
@@ -700,20 +846,43 @@ impl ReferenceRenderer {
             return;
         };
 
-        if visual.sprite_kind == ShipSpriteKind::Alive {
-            if let Some(index) = visual.exact_ship_frame_index {
-                if let Some(sprite) = car_atlas.exact_ship_frames_raw.get(index) {
-                    self.draw_sprite_with_clip_mask(
-                        frame,
-                        sprite,
-                        pipeline.placement.sprite_left,
-                        pipeline.placement.sprite_top,
-                        0,
-                        0,
-                        &mut pipeline.clip_mask,
-                    );
-                    return;
-                }
+        if let Some(index) = visual.exact_ship_frame_index {
+            if let Some(sprite) = car_atlas.exact_ship_frames_raw.get(index) {
+                self.draw_sprite_with_clip_mask(
+                    frame,
+                    sprite,
+                    SpriteClipPlacement {
+                        destination_x: pipeline.placement.sprite_left,
+                        destination_y: pipeline.placement.sprite_top,
+                        mask_offset_x: 0,
+                        mask_offset_y: 0,
+                    },
+                    &mut pipeline.clip_mask,
+                    visual.thrust_phase,
+                );
+                return;
+            }
+        }
+        if visual.sprite_kind == ShipSpriteKind::Exploding {
+            let index = visual
+                .explosion_frame
+                .min(car_atlas.exact_explosion_frames_raw.len().saturating_sub(1));
+            if let Some(sprite) = car_atlas.exact_explosion_frames_raw.get(index) {
+                let horizontal_inset =
+                    DOS_EXPLOSION_ENVELOPE_WIDTH.saturating_sub(usize::from(sprite.width)) / 2;
+                self.draw_sprite_with_clip_mask(
+                    frame,
+                    sprite,
+                    SpriteClipPlacement {
+                        destination_x: pipeline.placement.sprite_left + horizontal_inset as i32,
+                        destination_y: pipeline.placement.sprite_top,
+                        mask_offset_x: horizontal_inset,
+                        mask_offset_y: 0,
+                    },
+                    &mut pipeline.clip_mask,
+                    1,
+                );
+                return;
             }
         }
 
@@ -726,25 +895,133 @@ impl ReferenceRenderer {
         self.draw_sprite(frame, sprite, x, y, SHIP_SCALE);
     }
 
-    fn draw_gauge(&self, frame: &mut FrameBuffer320x200, pack: &HudFragmentPack, amount: f64) {
+    fn draw_segment_gauge(
+        &self,
+        frame: &mut FrameBuffer320x200,
+        pack: &HudFragmentPack,
+        amount: f64,
+    ) {
         if pack.fragments.is_empty() {
             return;
         }
-        let index = ((amount.clamp(0.0, 1.0) * pack.fragments.len() as f64).round() as isize - 1)
-            .clamp(0, pack.fragments.len() as isize - 1) as usize;
-        let fragment = &pack.fragments[index];
+
+        let filled_count = (amount.clamp(0.0, 1.0) * pack.fragments.len() as f64).ceil() as usize;
+        for fragment in pack.fragments.iter().take(filled_count) {
+            self.draw_indexed_hud_fragment(frame, fragment, [None, Some(94), Some(95)]);
+        }
+        for fragment in pack.fragments.iter().skip(filled_count) {
+            self.draw_indexed_hud_fragment(frame, fragment, [None, Some(92), None]);
+        }
+    }
+
+    fn draw_speed_gauge(
+        &self,
+        frame: &mut FrameBuffer320x200,
+        pack: &HudFragmentPack,
+        visible_count: usize,
+    ) {
+        if pack.fragments.is_empty() {
+            return;
+        }
+
+        if visible_count == 0 {
+            self.draw_indexed_hud_fragment(frame, &pack.fragments[0], [None, Some(0), Some(93)]);
+            return;
+        }
+        for fragment in pack
+            .fragments
+            .iter()
+            .take(visible_count.min(pack.fragments.len()))
+        {
+            self.draw_indexed_hud_fragment(frame, fragment, [None, Some(94), Some(95)]);
+        }
+        if let Some(next_fragment) = pack.fragments.get(visible_count) {
+            self.draw_indexed_hud_fragment(frame, next_fragment, [None, Some(0), Some(93)]);
+        }
+    }
+
+    fn draw_lift_indicator(&self, frame: &mut FrameBuffer320x200, visible_count: usize) {
+        for index in 0..visible_count.min(29) {
+            let x = 42 + index;
+            let anchor_y = 143usize;
+            let Some(run_color) = frame.pixel_index(x, anchor_y) else {
+                continue;
+            };
+
+            let mut top = anchor_y;
+            while top > 0 && frame.pixel_index(x, top - 1) == Some(run_color) {
+                top -= 1;
+            }
+
+            let mut y = top;
+            while y < FRAMEBUFFER_HEIGHT && frame.pixel_index(x, y) == Some(run_color) {
+                frame.set_pixel_index(x, y, 96);
+                y += 1;
+            }
+        }
+    }
+
+    fn draw_indexed_hud_fragment(
+        &self,
+        frame: &mut FrameBuffer320x200,
+        fragment: &skyroads_data::HudFragment,
+        pixel_indices: [Option<u8>; 3],
+    ) {
         for y in 0..usize::from(fragment.height) {
             for x in 0..usize::from(fragment.width) {
-                let pixel_index = fragment.pixels[y * usize::from(fragment.width) + x];
-                if pixel_index == 0 {
+                let source_index = fragment.pixels[y * usize::from(fragment.width) + x] as usize;
+                let Some(pixel_index) = pixel_indices.get(source_index).copied().flatten() else {
                     continue;
-                }
-                let color_index = pixel_index.min(2) as usize;
-                frame.set_pixel(
+                };
+                frame.set_pixel_index(
                     usize::from(fragment.x) + x,
                     usize::from(fragment.y) + y,
-                    DASHBOARD_COLORS[color_index],
+                    pixel_index,
                 );
+            }
+        }
+    }
+
+    fn draw_trail_meter(&self, frame: &mut FrameBuffer320x200, value: usize) {
+        let mut remaining = value;
+        for digit_offset in 0..TRAIL_METER_DIGITS {
+            let digit = remaining % 10;
+            remaining /= 10;
+            if remaining == 0 && digit == 0 && digit_offset > 0 {
+                break;
+            }
+
+            let destination_x =
+                TRAIL_METER_X + (TRAIL_METER_DIGITS - digit_offset - 1) * (DOS_NUMBER_WIDTH + 1);
+            let pixels = &DOS_NUMBER_PIXELS[digit];
+            for y in 0..DOS_NUMBER_HEIGHT {
+                for x in 0..DOS_NUMBER_WIDTH {
+                    let pixel_index = match pixels[y * DOS_NUMBER_WIDTH + x] {
+                        0 => 0,
+                        1 => 97,
+                        2 => 98,
+                        _ => continue,
+                    };
+                    frame.set_pixel_index(destination_x + x, TRAIL_METER_Y + y, pixel_index);
+                }
+            }
+        }
+    }
+
+    fn draw_jump_master(&self, frame: &mut FrameBuffer320x200, in_use: bool) {
+        let frame_index = usize::from(in_use);
+        let frame_start = frame_index * DOS_JUMP_MASTER_FRAME_PIXELS;
+        let pixels =
+            &DOS_JUMP_MASTER_PIXELS[frame_start..frame_start + DOS_JUMP_MASTER_FRAME_PIXELS];
+
+        for y in 0..DOS_JUMP_MASTER_HEIGHT {
+            for x in 0..DOS_JUMP_MASTER_WIDTH {
+                let pixel_index = if pixels[y * DOS_JUMP_MASTER_WIDTH + x] == 0 {
+                    0
+                } else {
+                    98
+                };
+                frame.set_pixel_index(JUMP_MASTER_X + x, JUMP_MASTER_Y + y, pixel_index);
             }
         }
     }
@@ -760,6 +1037,73 @@ impl ReferenceRenderer {
         if let Some(fragments) = archive.frames.get(frame_index) {
             for fragment in fragments {
                 self.draw_fragment(frame, fragment, alpha, brightness, 1.0);
+            }
+        }
+    }
+
+    /// Draw the world background through the full DOS gameplay palette.
+    ///
+    /// The world bitmap uses local indices in the final 114-color gameplay
+    /// palette bank, not direct VGA indices.
+    fn draw_world_background(&self, frame: &mut FrameBuffer320x200, world_index: usize) {
+        let world = self
+            .assets
+            .worlds
+            .get(world_index)
+            .or_else(|| self.assets.worlds.first());
+        let Some(world) = world else {
+            return;
+        };
+        let Some(fragments) = world.frames.first() else {
+            return;
+        };
+        for fragment in fragments {
+            for y in 0..usize::from(fragment.height) {
+                for x in 0..usize::from(fragment.width) {
+                    let local_index = fragment.pixels[y * usize::from(fragment.width) + x];
+                    if fragment.transparent_zero && local_index == 0 {
+                        continue;
+                    }
+                    let Some(pixel_index) = WORLD_PALETTE_START.checked_add(local_index) else {
+                        continue;
+                    };
+                    frame.set_pixel_index(
+                        usize::from(fragment.x_offset) + x,
+                        usize::from(fragment.y_offset) + y,
+                        pixel_index,
+                    );
+                }
+            }
+        }
+    }
+
+    fn draw_indexed_archive_frame(
+        &self,
+        frame: &mut FrameBuffer320x200,
+        archive: &ImageArchive,
+        frame_index: usize,
+        palette_start: u8,
+    ) {
+        let Some(fragments) = archive.frames.get(frame_index) else {
+            return;
+        };
+
+        for fragment in fragments {
+            for y in 0..usize::from(fragment.height) {
+                for x in 0..usize::from(fragment.width) {
+                    let local_index = fragment.pixels[y * usize::from(fragment.width) + x];
+                    if fragment.transparent_zero && local_index == 0 {
+                        continue;
+                    }
+                    let Some(pixel_index) = palette_start.checked_add(local_index) else {
+                        continue;
+                    };
+                    frame.set_pixel_index(
+                        usize::from(fragment.x_offset) + x,
+                        usize::from(fragment.y_offset) + y,
+                        pixel_index,
+                    );
+                }
             }
         }
     }
@@ -842,12 +1186,15 @@ impl ReferenceRenderer {
                     continue;
                 };
                 let color = scale_brightness(color, brightness);
-                frame.blend_pixel(
-                    usize::from(fragment.x_offset) + x,
-                    usize::from(fragment.y_offset) + y,
-                    color,
-                    alpha,
-                );
+                let destination_x = usize::from(fragment.x_offset) + x;
+                let destination_y = usize::from(fragment.y_offset) + y;
+                let uses_original_palette_index =
+                    alpha == 1.0 && brightness == 1.0 && frame.palette.color(pixel_index) == color;
+                if uses_original_palette_index {
+                    frame.set_pixel_index(destination_x, destination_y, pixel_index);
+                } else {
+                    frame.blend_pixel(destination_x, destination_y, color, alpha);
+                }
             }
         }
     }
@@ -873,7 +1220,11 @@ impl ReferenceRenderer {
                 if px < 0 || py < 0 {
                     continue;
                 }
-                frame.set_pixel(px as usize, py as usize, color);
+                if frame.palette.color(pixel_index) == color {
+                    frame.set_pixel_index(px as usize, py as usize, pixel_index);
+                } else {
+                    frame.set_pixel(px as usize, py as usize, color);
+                }
             }
         }
     }
@@ -892,9 +1243,7 @@ impl ReferenceRenderer {
                 if sprite.transparent_zero && pixel_index == 0 {
                     continue;
                 }
-                let Some(color) = sprite.palette.colors.get(pixel_index as usize).copied() else {
-                    continue;
-                };
+                let gameplay_index = dos_ship_pixel_index(pixel_index, 2);
                 for sy in 0..scale {
                     for sx in 0..scale {
                         let px = dest_x + (x * scale + sx) as i32;
@@ -902,7 +1251,7 @@ impl ReferenceRenderer {
                         if px < 0 || py < 0 {
                             continue;
                         }
-                        frame.set_pixel(px as usize, py as usize, color);
+                        frame.set_pixel_index(px as usize, py as usize, gameplay_index);
                     }
                 }
             }
@@ -913,39 +1262,35 @@ impl ReferenceRenderer {
         &self,
         frame: &mut FrameBuffer320x200,
         sprite: &ImageFrame,
-        dest_x: i32,
-        dest_y: i32,
-        mask_offset_x: usize,
-        mask_offset_y: usize,
+        placement: SpriteClipPlacement,
         clip_mask: &mut [u8; DOS_SHIP_CLIP_MASK_BYTES],
+        thrust_phase: usize,
     ) {
         for y in 0..usize::from(sprite.height) {
-            if y + mask_offset_y >= DOS_SHIP_CLIP_MASK_HEIGHT {
+            if y + placement.mask_offset_y >= DOS_SHIP_CLIP_MASK_HEIGHT {
                 break;
             }
             for x in 0..usize::from(sprite.width) {
-                if x + mask_offset_x >= DOS_SHIP_SPRITE_WIDTH {
+                if x + placement.mask_offset_x >= DOS_SHIP_SPRITE_WIDTH {
                     break;
                 }
                 let pixel_index = sprite.pixels[y * usize::from(sprite.width) + x];
                 if sprite.transparent_zero && pixel_index == 0 {
                     continue;
                 }
-                let mask_index =
-                    (y + mask_offset_y) * DOS_SHIP_MASK_ROW_STRIDE + (x + mask_offset_x);
+                let mask_index = (y + placement.mask_offset_y) * DOS_SHIP_MASK_ROW_STRIDE
+                    + (x + placement.mask_offset_x);
                 if clip_mask[mask_index] == 0 {
                     continue;
                 }
-                let Some(color) = sprite.palette.colors.get(pixel_index as usize).copied() else {
-                    continue;
-                };
-                let px = dest_x + x as i32;
-                let py = dest_y + y as i32;
+                let gameplay_index = dos_ship_pixel_index(pixel_index, thrust_phase);
+                let px = placement.destination_x + x as i32;
+                let py = placement.destination_y + y as i32;
                 if px < 0 || py < 0 {
                     continue;
                 }
                 clip_mask[mask_index] = 2;
-                frame.set_pixel(px as usize, py as usize, color);
+                frame.set_pixel_index(px as usize, py as usize, gameplay_index);
             }
         }
     }
@@ -1018,13 +1363,10 @@ impl ReferenceRenderer {
     fn draw_ship_shadow(
         &self,
         frame: &mut FrameBuffer320x200,
-        visual: &DerivedShipVisualState,
+        scene: &DemoPlaybackState,
+        _visual: &DerivedShipVisualState,
         pipeline: &DosShipPipeline,
     ) {
-        if visual.sprite_kind != ShipSpriteKind::Alive {
-            return;
-        }
-
         let Some(variant) = pipeline.shadow_variant else {
             return;
         };
@@ -1041,30 +1383,14 @@ impl ReferenceRenderer {
 
                 let px = pipeline.placement.shadow_left + local_x as i32;
                 let py = pipeline.placement.shadow_top + local_y as i32;
-                frame.darken_pixel(px, py, 0.58);
+                if px < 0 || py < 0 {
+                    continue;
+                }
+                let color_code = ship_shadow_color_code(scene);
+                let pixel_index = dos_mode13_color_index(color_code, DosRenderSide::Right);
+                frame.set_pixel_index(px as usize, py as usize, pixel_index);
             }
         }
-    }
-
-    fn draw_branding(&self, frame: &mut FrameBuffer320x200, y: i32, scale: usize, alpha: f32) {
-        let text = "CODEX PORT BY CODEX 5.4 AND AMMAAR";
-        let color = scale_brightness(RgbColor::new(245, 214, 109), alpha);
-        let shadow = scale_brightness(RgbColor::new(54, 24, 70), alpha);
-        self.draw_text_centered(frame, text, y + scale as i32, shadow, scale);
-        self.draw_text_centered(frame, text, y, color, scale);
-    }
-
-    fn draw_text_centered(
-        &self,
-        frame: &mut FrameBuffer320x200,
-        text: &str,
-        y: i32,
-        color: RgbColor,
-        scale: usize,
-    ) {
-        let width = text_pixel_width(text, scale);
-        let x = (FRAMEBUFFER_WIDTH as i32 - width) / 2;
-        self.draw_text(frame, x, y, text, color, scale);
     }
 
     fn draw_text_with_shadow(
@@ -1117,28 +1443,26 @@ impl ReferenceRenderer {
         }
     }
 
-    fn draw_settings_display_toggle(
+    fn draw_settings_choice(
         &self,
         frame: &mut FrameBuffer320x200,
         label: &str,
+        value: &str,
         center_x: i32,
-        enabled: bool,
         selected: bool,
+        value_available: bool,
     ) {
         let widget_x = center_x - SETTINGS_WIDGET_WIDTH / 2;
         let widget_y = SETTINGS_WIDGET_TOP;
-        let label_color = if enabled {
-            SETTINGS_SELECTED_ORANGE
-        } else {
+        let label_color = if selected {
             SETTINGS_CURSOR_WHITE
+        } else {
+            SETTINGS_WIDGET_TEXT_DIM
         };
-        let status_text = if enabled { "ON" } else { "OFF" };
-        let status_color = if enabled {
+        let value_color = if value_available {
             SETTINGS_SELECTED_ORANGE
-        } else if selected {
-            SETTINGS_CURSOR_WHITE
         } else {
-            SETTINGS_WIDGET_OUTLINE
+            SETTINGS_WIDGET_TEXT_DIM
         };
 
         frame.fill_rect(
@@ -1175,50 +1499,23 @@ impl ReferenceRenderer {
             2,
         );
 
-        let status_x = center_x - SETTINGS_WIDGET_STATUS_WIDTH / 2;
-        let status_y = widget_y + 11;
-        frame.fill_rect(
-            status_x,
-            status_y,
-            SETTINGS_WIDGET_STATUS_WIDTH,
-            SETTINGS_WIDGET_STATUS_HEIGHT,
-            SETTINGS_WIDGET_BG,
+        let value_width = text_pixel_width(value, 1);
+        debug_assert!(
+            value_width <= SETTINGS_WIDGET_WIDTH - SETTINGS_WIDGET_TEXT_PADDING * 2,
+            "settings value must fit inside its widget"
         );
-        if enabled {
-            frame.fill_rect(
-                status_x + 1,
-                status_y + 1,
-                SETTINGS_WIDGET_STATUS_WIDTH - 2,
-                SETTINGS_WIDGET_STATUS_HEIGHT - 2,
-                SETTINGS_SELECTED_ORANGE,
-            );
-        }
-        frame.stroke_rect(
-            status_x,
-            status_y,
-            SETTINGS_WIDGET_STATUS_WIDTH,
-            SETTINGS_WIDGET_STATUS_HEIGHT,
-            status_color,
-        );
-
-        let status_text_color = if enabled {
-            TEXT_SHADOW
-        } else {
-            SETTINGS_WIDGET_TEXT_DIM
-        };
-        let status_text_width = text_pixel_width(status_text, 1);
         self.draw_text_with_shadow(
             frame,
-            center_x - status_text_width / 2,
-            status_y + 2,
-            status_text,
-            status_text_color,
+            center_x - value_width / 2,
+            widget_y + 14,
+            value,
+            value_color,
             1,
         );
     }
 
     fn draw_debug_overlay(&self, frame: &mut FrameBuffer320x200, scene: &DemoPlaybackState) {
-        let visual = derive_ship_visual_state(scene, &self.assets.dos_ship_tables);
+        let visual = derive_ship_visual_state(scene);
         let slices = project_road_slices(scene);
         let placement = ship_screen_placement_from_slices(
             scene,
@@ -1237,7 +1534,7 @@ impl ReferenceRenderer {
         frame: &mut FrameBuffer320x200,
         scene: &DemoPlaybackState,
     ) {
-        let visual = derive_ship_visual_state(scene, &self.assets.dos_ship_tables);
+        let visual = derive_ship_visual_state(scene);
         let slices = project_road_slices(scene);
         let road_coverage = self.build_dos_road_coverage_frame(scene);
         let mut pipeline = build_dos_ship_pipeline(
@@ -1267,7 +1564,7 @@ impl ReferenceRenderer {
             self.draw_projected_slice(frame, slice);
         }
         self.draw_projected_slice_guides(frame, &slices);
-        self.draw_ship_shadow(frame, &visual, &pipeline);
+        self.draw_ship_shadow(frame, scene, &visual, &pipeline);
         self.draw_ship_sprite(frame, scene.frame_index, &visual, &mut pipeline);
         self.draw_ship_debug_guides(frame, scene, &visual, placement);
         self.draw_topdown_inset(frame, scene);
@@ -1292,7 +1589,17 @@ impl ReferenceRenderer {
             (VIEW_BOTTOM_Y - 26) as i32,
             RgbColor::new(16, 18, 26),
         );
-        self.draw_topdown_map(frame, scene, 20, 26, 280, 104, true);
+        self.draw_topdown_map(
+            frame,
+            scene,
+            DebugMapLayout {
+                x: 20,
+                y: 26,
+                width: 280,
+                height: 104,
+                large: true,
+            },
+        );
         self.draw_archive_frame(frame, &self.assets.dashboard, 0, 1.0, 1.0);
         self.draw_debug_hud_panel(frame, scene, DebugViewMode::TopDown);
     }
@@ -1510,11 +1817,13 @@ impl ReferenceRenderer {
         self.draw_topdown_map(
             frame,
             scene,
-            DEBUG_TOPDOWN_INSET_X,
-            DEBUG_TOPDOWN_INSET_Y,
-            DEBUG_TOPDOWN_INSET_W,
-            DEBUG_TOPDOWN_INSET_H,
-            false,
+            DebugMapLayout {
+                x: DEBUG_TOPDOWN_INSET_X,
+                y: DEBUG_TOPDOWN_INSET_Y,
+                width: DEBUG_TOPDOWN_INSET_W,
+                height: DEBUG_TOPDOWN_INSET_H,
+                large: false,
+            },
         );
     }
 
@@ -1522,19 +1831,22 @@ impl ReferenceRenderer {
         &self,
         frame: &mut FrameBuffer320x200,
         scene: &DemoPlaybackState,
-        x: i32,
-        y: i32,
-        w: i32,
-        h: i32,
-        large: bool,
+        layout: DebugMapLayout,
     ) {
-        frame.fill_rect(x, y, w, h, RgbColor::new(8, 10, 14));
-        stroke_rect(frame, x, y, w, h, RgbColor::new(82, 196, 230));
+        let DebugMapLayout {
+            x,
+            y,
+            width,
+            height,
+            large,
+        } = layout;
+        frame.fill_rect(x, y, width, height, RgbColor::new(8, 10, 14));
+        stroke_rect(frame, x, y, width, height, RgbColor::new(82, 196, 230));
         if scene.rows.is_empty() {
             return;
         }
-        let row_h = (h - 8).max(7) / scene.rows.len().max(1) as i32;
-        let col_w = (w - 8) / ROAD_COLUMNS as i32;
+        let row_h = (height - 8).max(7) / scene.rows.len().max(1) as i32;
+        let col_w = (width - 8) / ROAD_COLUMNS as i32;
         let left_edge = LEVEL_CENTER_X - LEVEL_TILE_STRIDE_X * 3.5;
         for (row_idx, row) in scene.rows.iter().enumerate() {
             let cell_y = y + 4 + row_idx as i32 * row_h;
@@ -1558,7 +1870,7 @@ impl ReferenceRenderer {
                     frame,
                     x + 3,
                     cell_y - 1,
-                    w - 6,
+                    width - 6,
                     row_h.max(2) + 1,
                     RgbColor::new(255, 240, 120),
                 );
@@ -1570,8 +1882,8 @@ impl ReferenceRenderer {
         let ship_col = ((scene.ship.x_position - left_edge)
             / (LEVEL_TILE_STRIDE_X * ROAD_COLUMNS as f64))
             .clamp(0.0, 0.999);
-        let ship_x = x + 4 + (ship_col * f64::from((w - 8).max(1))) as i32;
-        let ship_y = y + 4 + (ship_row * f64::from((h - 8).max(1))) as i32;
+        let ship_x = x + 4 + (ship_col * f64::from((width - 8).max(1))) as i32;
+        let ship_y = y + 4 + (ship_row * f64::from((height - 8).max(1))) as i32;
         frame.fill_rect(ship_x - 2, ship_y - 2, 5, 5, RgbColor::new(112, 214, 255));
         if large {
             self.draw_text(
@@ -1716,7 +2028,7 @@ impl PrimitiveCursor {
         &mut self,
         frame: &mut FrameBuffer320x200,
         record: &TrekdatRecord,
-        cell: LevelCell,
+        _cell: LevelCell,
         side: DosRenderSide,
         override_color_code: Option<u8>,
     ) -> bool {
@@ -1732,8 +2044,7 @@ impl PrimitiveCursor {
             return true;
         }
         let color_code = override_color_code.unwrap_or(shape.color);
-        let color = dos_shape_color(cell, color_code);
-        draw_dos_shape(frame, &shape, color, side);
+        draw_dos_shape(frame, &shape, color_code, side);
         true
     }
 }
@@ -2058,9 +2369,10 @@ fn scene_row(scene: &DemoPlaybackState, row_index: isize) -> [LevelCell; ROAD_CO
 fn draw_dos_shape(
     frame: &mut FrameBuffer320x200,
     shape: &TrekdatShape,
-    color: RgbColor,
+    color_code: u8,
     side: DosRenderSide,
 ) {
+    let color_index = dos_mode13_color_index(color_code, side);
     for span in &shape.spans {
         if span.width == 0 {
             continue;
@@ -2071,37 +2383,78 @@ fn draw_dos_shape(
                 i32::from(SCREEN_WIDTH) - i32::from(span.x) - i32::from(span.width)
             }
         };
-        draw_trekdat_span(frame, x, span.y as i32, span.width as i32, color);
+        draw_trekdat_span(frame, x, span.y as i32, span.width as i32, color_index);
     }
 }
 
-fn draw_trekdat_span(frame: &mut FrameBuffer320x200, x: i32, y: i32, width: i32, color: RgbColor) {
+/// Translate a TREKDAT color code through the mode-13h lookup selected by the
+/// DOS renderer. The left and right rasterizers use adjacent, asymmetric
+/// columns in the captured interleaved table at `SS:0322`.
+fn dos_mode13_color_index(color_code: u8, side: DosRenderSide) -> u8 {
+    match side {
+        DosRenderSide::Left => match color_code {
+            0..=67 => color_code,
+            68 => 71,
+            69 => 70,
+            70 => 69,
+            71 => 68,
+            72 => 69,
+            73 => 70,
+            _ => 0,
+        },
+        DosRenderSide::Right => match color_code {
+            0..=30 => color_code,
+            31..=45 => color_code + 15,
+            46..=60 => 0,
+            61..=62 => color_code,
+            63 => 64,
+            64 => 0,
+            65..=67 => color_code,
+            68 => 70,
+            69 => 69,
+            70 => 68,
+            71 => 69,
+            72 => 70,
+            73 => 71,
+            _ => 0,
+        },
+    }
+}
+
+fn draw_trekdat_span(frame: &mut FrameBuffer320x200, x: i32, y: i32, width: i32, color_index: u8) {
     if y < HORIZON_Y as i32 || y >= VIEW_BOTTOM_Y as i32 {
         return;
     }
-    frame.fill_rect(x, y, width, 1, color);
+    frame.fill_rect_index(x, y, width, 1, color_index);
 }
 
-fn dos_shape_color(cell: LevelCell, color_code: u8) -> RgbColor {
-    let base = road_color(cell);
-    match color_code {
-        0x01..=0x0E => scale_brightness(base, 0.98 + f32::from(color_code & 0x0F) * 0.02),
-        0x0F..=0x1D => scale_brightness(base, 1.18),
-        0x1E..=0x2D => scale_brightness(base, 0.78),
-        0x3D => scale_brightness(base, 0.58),
-        0x41 => scale_brightness(base, 0.90),
-        0x43 => scale_brightness(base, 0.68),
-        62 => scale_brightness(base, 0.72),
-        63 => scale_brightness(base, 0.62),
-        68 => scale_brightness(base, 1.28),
-        _ => scale_brightness(base, 0.92),
+fn dos_ship_pixel_index(local_index: u8, thrust_phase: usize) -> u8 {
+    if local_index == 0 {
+        return 0;
     }
+    if (1..=3).contains(&local_index) {
+        return match thrust_phase {
+            0 => SHIP_PALETTE_START + 1,
+            2 => SHIP_PALETTE_START + 2,
+            _ => SHIP_PALETTE_START.saturating_add(local_index),
+        };
+    }
+    SHIP_PALETTE_START.saturating_add(local_index)
 }
 
-fn derive_ship_visual_state(
-    scene: &DemoPlaybackState,
-    ship_tables: &ExeShipRuntimeTables,
-) -> DerivedShipVisualState {
+fn ship_shadow_color_code(scene: &DemoPlaybackState) -> u8 {
+    let x_fixed = dos_fixed(scene.ship.x_position);
+    let lane_index = dos_ship_lane_index_from_fixed(x_fixed) as usize;
+    let current_group = (scene.current_row >> 3) as isize;
+    let surface = scene_row(scene, current_group)[lane_index];
+    let surface_color = RoadCellBytes::from_cell(surface).low_nibble();
+
+    // The shipped type-0 road primitive at image offset 0x2957 paints the
+    // ship-shadow surface with the road cell's low nibble plus 0x1e.
+    surface_color.saturating_add(0x1e)
+}
+
+fn derive_ship_visual_state(scene: &DemoPlaybackState) -> DerivedShipVisualState {
     let x_fixed = dos_fixed(scene.ship.x_position);
     let lane_index = dos_ship_lane_index_from_fixed(x_fixed);
     let bank = match lane_index.cmp(&3) {
@@ -2122,45 +2475,20 @@ fn derive_ship_visual_state(
         || scene.ship.jump_input;
     let vertical_state = dos_ship_vertical_state(scene);
     let explosion_frame = scene.ship.explosion_timer / 3;
-    let thrust_phase = if scene.ship.accel_input > 0 {
-        let cycle_index = (scene.frame_index / 2) & 0x03;
-        usize::from(ship_tables.thrust_phase_by_cycle[cycle_index])
-    } else {
-        0
-    };
+    // DS:160C is advanced after the DOS renderer selects the ship sprite.
+    // Divide the preceding counter by two, then index the recovered four-word
+    // phase table at image offset 0x00ea.
+    let thrust_phase = scene.render_context.ship_sprite_phase;
 
     DerivedShipVisualState {
         sprite_kind,
         bank,
         jumping,
         explosion_frame,
-        exact_ship_frame_index: (scene.ship.state == skyroads_core::ShipState::Alive)
+        exact_ship_frame_index: (scene.ship.state != skyroads_core::ShipState::Exploded)
             .then_some(((lane_index * 3 + vertical_state) * 3) as usize + thrust_phase),
+        thrust_phase,
         on_surface: scene.ship.is_on_ground && scene.ship.state == skyroads_core::ShipState::Alive,
-    }
-}
-
-fn should_draw_game_over_overlay(scene: &DemoPlaybackState) -> bool {
-    let ship_state = scene.snapshot.craft_state;
-    if ship_state == skyroads_core::ShipState::Alive {
-        return false;
-    }
-
-    if scene.ship.explosion_timer != 0
-        && scene.ship.explosion_timer <= DOS_EXPLOSION_ANIMATION_TICKS
-    {
-        return false;
-    }
-
-    match ship_state {
-        skyroads_core::ShipState::Exploded => true,
-        skyroads_core::ShipState::Fallen if scene.ship.explosion_timer != 0 => true,
-        skyroads_core::ShipState::Fallen
-        | skyroads_core::ShipState::OutOfFuel
-        | skyroads_core::ShipState::OutOfOxygen => {
-            scene.ship.non_alive_frame_count >= DOS_NON_ALIVE_ANIMATION_TICKS
-        }
-        skyroads_core::ShipState::Alive => false,
     }
 }
 
@@ -2202,15 +2530,21 @@ fn dos_ship_lane_index_from_fixed(x_fixed: i32) -> i32 {
         .clamp(0, DOS_SHIP_LANE_COUNT as i32 - 1)
 }
 
-fn dos_ship_raw_screen_x(x_fixed: i32, ship_tables: &ExeShipRuntimeTables) -> i32 {
-    let lane_index = dos_ship_lane_index_from_fixed(x_fixed) as usize;
-    (x_fixed >> 7) + i32::from(ship_tables.screen_x_bias_by_lane[lane_index])
+fn dos_ship_raw_screen_x(x_fixed: i32, _ship_tables: &ExeShipRuntimeTables) -> i32 {
+    x_fixed >> 7
 }
 
 fn dos_ship_raw_screen_y(scene: &DemoPlaybackState, y_fixed: i32) -> i32 {
-    let rising = scene.ship.is_going_up || scene.ship.jump_input || scene.ship.y_velocity < 0.0;
-    let adjusted_y = if rising { y_fixed - 0x80 } else { y_fixed };
-    adjusted_y >> 7
+    let presents_fractional_explosion_lift =
+        scene.ship.state == skyroads_core::ShipState::Exploded && y_fixed & 0x7f != 0;
+    if presents_fractional_explosion_lift {
+        // The captured renderer state presents exploded lift at the next
+        // screen row: y=81.414 -> 82 and y=84.742 -> 85. Live ship frames keep
+        // the normal signed fixed-point truncation below.
+        (y_fixed + 0x7f) >> 7
+    } else {
+        y_fixed >> 7
+    }
 }
 
 fn dos_ship_shadow_height(
@@ -2219,14 +2553,17 @@ fn dos_ship_shadow_height(
     y_fixed: i32,
     ship_tables: &ExeShipRuntimeTables,
 ) -> i32 {
-    if scene.ship.state != skyroads_core::ShipState::Alive {
-        return 0;
+    if scene.ship.explosion_timer != 0 {
+        return -1;
     }
 
     let left_surface = dos_surface_height_at_probe(scene, x_fixed - 0x380, ship_tables);
     let right_surface = dos_surface_height_at_probe(scene, x_fixed + 0x380, ship_tables);
     let surface_height = left_surface.min(right_surface);
-    ((y_fixed - surface_height).max(0)) >> 7
+    if y_fixed < surface_height {
+        return -1;
+    }
+    (y_fixed - surface_height) >> 7
 }
 
 fn dos_surface_height_at_probe(
@@ -2273,7 +2610,7 @@ fn build_dos_ship_pipeline(
     scene: &DemoPlaybackState,
     ship_tables: &ExeShipRuntimeTables,
     road_coverage: Option<&FrameBuffer320x200>,
-    visual: &DerivedShipVisualState,
+    _visual: &DerivedShipVisualState,
 ) -> DosShipPipeline {
     let x_fixed = dos_fixed(scene.ship.x_position);
     let y_fixed = dos_fixed(scene.ship.y_position);
@@ -2294,18 +2631,19 @@ fn build_dos_ship_pipeline(
             + (DOS_SHIP_SHADOW_MASK_HEIGHT as i32 / 2),
     };
 
-    let clip_mask = build_ship_clip_mask_from_road_coverage(
-        road_coverage,
-        placement.sprite_left,
-        placement.sprite_top,
-        placement.sprite_center_x,
+    let boundary_half_widths = [0u16; DOS_SHIP_BOUNDARY_ROW_COUNT];
+    let clip_mask = build_dos_ship_clip_mask(
+        &boundary_half_widths,
+        raw_x,
+        raw_y,
+        dos_ship_mask_lift(scene, raw_y),
     );
     let shadow_surface_mask = build_shadow_surface_mask_from_road_coverage(
         road_coverage,
         placement.shadow_left,
         placement.shadow_top,
     );
-    let shadow_variant = (visual.sprite_kind == ShipSpriteKind::Alive && shadow_height >= 0)
+    let shadow_variant = (shadow_height >= 0)
         .then_some((shadow_height / 5) as usize)
         .filter(|variant| *variant < DOS_SHIP_SHADOW_VARIANTS);
 
@@ -2317,19 +2655,90 @@ fn build_dos_ship_pipeline(
     }
 }
 
-fn build_ship_clip_mask_from_road_coverage(
-    _road_coverage: Option<&FrameBuffer320x200>,
-    _sprite_left: i32,
-    _sprite_top: i32,
-    _ship_center_x: i32,
+fn build_dos_ship_clip_mask(
+    boundary_half_widths: &[u16; DOS_SHIP_BOUNDARY_ROW_COUNT],
+    ship_x: i32,
+    ship_y: i32,
+    lift: i32,
 ) -> [u8; DOS_SHIP_CLIP_MASK_BYTES] {
-    // DOS does gate ship/shadow writes through mask buffers, but the ship mask is not derived
-    // from the visible road fill. The current road-coverage approximation clips the ship to the
-    // road span and produces the sideways "sliced off" artifact visible in render-demo captures.
-    // Until the original 0x32A5 row-mask path is ported exactly, keep ship pixels unmasked here
-    // and let only the separate shadow surface mask depend on road coverage.
-    let mask = [1u8; DOS_SHIP_CLIP_MASK_BYTES];
+    let mut mask = [0u8; DOS_SHIP_CLIP_MASK_BYTES];
+    // The DOS routine clears 0x1DE words (956 bytes) for a 957-byte mask.
+    // The trailing byte retains its initialized visible value.
+    mask[DOS_SHIP_CLIP_MASK_BYTES - 1] = 1;
+    let mut screen_y = ship_y;
+    let mut boundary_index = DOS_SHIP_MAX_SCREEN_Y - ship_y;
+
+    for mask_row in 0..DOS_SHIP_CLIP_MASK_HEIGHT {
+        if (DOS_SHIP_MIN_SCREEN_Y..=DOS_SHIP_MAX_SCREEN_Y).contains(&screen_y) {
+            let half_width = usize::try_from(boundary_index)
+                .ok()
+                .and_then(|index| boundary_half_widths.get(index))
+                .copied()
+                .unwrap_or(0);
+            let (allowed_left, allowed_right) =
+                dos_ship_allowed_horizontal_span(ship_x, i32::from(half_width));
+            fill_dos_ship_mask_row(&mut mask, mask_row, ship_x, allowed_left, allowed_right);
+        }
+
+        screen_y -= 1;
+        boundary_index += 1;
+        if mask_row + 1 == DOS_SHIP_LIFT_SPLIT_ROW {
+            let lift_adjustment = lift - DOS_SHIP_LIFT_BASELINE;
+            screen_y -= lift_adjustment;
+            boundary_index += lift_adjustment;
+        }
+    }
+
     mask
+}
+
+fn dos_ship_mask_lift(scene: &DemoPlaybackState, raw_y: i32) -> i32 {
+    match scene.ship.state {
+        skyroads_core::ShipState::Exploded => i32::from(i16::MAX),
+        skyroads_core::ShipState::Fallen => raw_y,
+        skyroads_core::ShipState::Alive
+        | skyroads_core::ShipState::OutOfFuel
+        | skyroads_core::ShipState::OutOfOxygen => raw_y - GROUND_Y as i32,
+    }
+}
+
+fn dos_ship_allowed_horizontal_span(ship_x: i32, boundary_half_width: i32) -> (i32, i32) {
+    if boundary_half_width == 0 {
+        return (DOS_SHIP_MIN_X, DOS_SHIP_MAX_X);
+    }
+
+    let left_boundary = DOS_SHIP_BOUNDARY_CENTER_X - boundary_half_width;
+    if ship_x < left_boundary {
+        (DOS_SHIP_MIN_X, left_boundary)
+    } else {
+        (
+            DOS_SHIP_BOUNDARY_CENTER_X + boundary_half_width,
+            DOS_SHIP_MAX_X,
+        )
+    }
+}
+
+fn fill_dos_ship_mask_row(
+    mask: &mut [u8; DOS_SHIP_CLIP_MASK_BYTES],
+    mask_row: usize,
+    ship_x: i32,
+    allowed_left: i32,
+    allowed_right: i32,
+) {
+    let first_visible_column = (allowed_left - ship_x).max(0) as usize;
+    if first_visible_column >= DOS_SHIP_SPRITE_WIDTH {
+        return;
+    }
+
+    let ship_right = ship_x + DOS_SHIP_SPRITE_WIDTH as i32;
+    let hidden_right_columns = (ship_right - allowed_right).max(0) as usize;
+    let end_visible_column = DOS_SHIP_SPRITE_WIDTH.saturating_sub(hidden_right_columns);
+    if first_visible_column >= end_visible_column {
+        return;
+    }
+
+    let row_start = mask_row * DOS_SHIP_MASK_ROW_STRIDE;
+    mask[row_start + first_visible_column..row_start + end_visible_column].fill(1);
 }
 
 fn build_shadow_surface_mask_from_road_coverage(
@@ -2356,54 +2765,6 @@ fn build_shadow_surface_mask_from_road_coverage(
     mask
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-fn clip_window_for_screen_y(
-    road_coverage: &FrameBuffer320x200,
-    screen_y: i32,
-    ship_center_x: i32,
-) -> Option<(i32, i32)> {
-    if screen_y < 0 || screen_y >= FRAMEBUFFER_HEIGHT as i32 {
-        return None;
-    }
-
-    let mut best_run = None;
-    let mut best_distance = i32::MAX;
-    let mut x = 0i32;
-
-    while x < FRAMEBUFFER_WIDTH as i32 {
-        while x < FRAMEBUFFER_WIDTH as i32 && !framebuffer_has_color(road_coverage, x, screen_y) {
-            x += 1;
-        }
-        if x >= FRAMEBUFFER_WIDTH as i32 {
-            break;
-        }
-
-        let run_left = x;
-        while x < FRAMEBUFFER_WIDTH as i32 && framebuffer_has_color(road_coverage, x, screen_y) {
-            x += 1;
-        }
-        let run_right = x;
-        let contains_ship = ship_center_x >= run_left && ship_center_x < run_right;
-        let distance = if contains_ship {
-            0
-        } else if ship_center_x < run_left {
-            run_left - ship_center_x
-        } else {
-            ship_center_x - (run_right - 1)
-        };
-        let best_width = best_run.map(|(left, right)| right - left).unwrap_or(0);
-        let run_width = run_right - run_left;
-        let is_better =
-            distance < best_distance || (distance == best_distance && run_width > best_width);
-        if is_better {
-            best_distance = distance;
-            best_run = Some((run_left, run_right));
-        }
-    }
-
-    best_run
-}
-
 fn framebuffer_has_color(frame: &FrameBuffer320x200, x: i32, y: i32) -> bool {
     if x < 0 || y < 0 {
         return false;
@@ -2413,17 +2774,14 @@ fn framebuffer_has_color(frame: &FrameBuffer320x200, x: i32, y: i32) -> bool {
     if x >= FRAMEBUFFER_WIDTH || y >= FRAMEBUFFER_HEIGHT {
         return false;
     }
-    let offset = (y * FRAMEBUFFER_WIDTH + x) * 4;
-    frame.pixels_rgba[offset] != 0
-        || frame.pixels_rgba[offset + 1] != 0
-        || frame.pixels_rgba[offset + 2] != 0
+    frame.pixel_index(x, y).is_some_and(|index| index != 0)
 }
 
 fn dos_ship_vertical_state(scene: &DemoPlaybackState) -> i32 {
     const SHIP_RISE_THRESHOLD: f64 = 0x163 as f64 / 0x80 as f64;
-    if scene.ship.y_position < GROUND_Y || scene.ship.z_position < 0.0 {
-        2
-    } else if scene.ship.y_velocity <= -SHIP_RISE_THRESHOLD {
+    let is_above_playfield = scene.ship.y_position < GROUND_Y || scene.ship.z_position < 0.0;
+    let is_rising = scene.ship.y_velocity <= -SHIP_RISE_THRESHOLD;
+    if is_above_playfield || is_rising {
         2
     } else if scene.ship.y_velocity >= SHIP_RISE_THRESHOLD {
         1
@@ -2521,9 +2879,8 @@ fn projected_width_for_depth(depth: f32, far_depth: f32) -> f32 {
 
 fn projected_center_x(scene: &DemoPlaybackState, depth: f32, far_depth: f32) -> f32 {
     let _ = (scene, depth, far_depth);
-    // Keep the fallback road projection centered until the exact DOS camera path is ported.
-    // The gameplay state already carries the ship's world X; applying an extra guessed camera
-    // pan here largely cancels the visible left/right movement of the user-controlled ship.
+    // This projection is only used by diagnostic views. Keeping it centered makes the
+    // guides readable without implying that a guessed camera pan is DOS behavior.
     FRAMEBUFFER_WIDTH as f32 / 2.0
 }
 
@@ -2543,7 +2900,7 @@ fn project_surface_spans(
             continue;
         };
         let top_span = top_span.unwrap_or_else(|| bottom_span.unwrap());
-        let bottom_span = bottom_span.unwrap_or_else(|| top_span);
+        let bottom_span = bottom_span.unwrap_or(top_span);
         spans.push(ProjectedRoadSpan {
             top_start: top_span.start_column as f32 / ROAD_COLUMNS as f32,
             top_end: top_span.end_column_exclusive as f32 / ROAD_COLUMNS as f32,
@@ -2755,6 +3112,9 @@ impl CarAtlas {
             .cloned()
             .map(trim_sprite)
             .collect::<Vec<_>>();
+        let exact_explosion_frames_raw = (0..7)
+            .map(|slot| dos_car_sprite_slot(frame, slot))
+            .collect::<Option<Vec<_>>>()?;
         // The raw full-width split includes four tiny fragments between the explosion strip and
         // the real 63-frame DOS ship run. Start at the first full ship frame, not at the raw
         // split index that merely follows the explosion frames.
@@ -2762,7 +3122,7 @@ impl CarAtlas {
             [DOS_EXACT_SHIP_FRAME_START..DOS_EXACT_SHIP_FRAME_START + DOS_EXACT_SHIP_FRAME_COUNT]
             .iter()
             .cloned()
-            .map(rotate_sprite_cw)
+            .map(transpose_sprite)
             .collect::<Vec<_>>();
         let exact_ship_frames = exact_ship_frames_raw
             .iter()
@@ -2778,6 +3138,7 @@ impl CarAtlas {
         let destroyed = alive_center.first().cloned()?;
         Some(Self {
             explosion_frames,
+            exact_explosion_frames_raw,
             exact_ship_frames_raw,
             exact_ship_frames,
             alive_left,
@@ -2824,6 +3185,52 @@ impl CarAtlas {
     }
 }
 
+fn dos_car_sprite_slot(source: &ImageFrame, slot: usize) -> Option<ImageFrame> {
+    if usize::from(source.width) != DOS_CAR_SOURCE_WIDTH {
+        return None;
+    }
+
+    let slot_start = slot.checked_mul(DOS_CAR_SLOT_BYTES)?;
+    let sprite_end = slot_start.checked_add(DOS_CAR_SPRITE_BYTES)?;
+    let slot_pixels = source.pixels.get(slot_start..sprite_end)?;
+    let first_nonempty_row = (0..DOS_SHIP_SPRITE_WIDTH)
+        .find(|row| {
+            let start = row * DOS_CAR_SOURCE_WIDTH;
+            slot_pixels[start..start + DOS_CAR_SOURCE_WIDTH]
+                .iter()
+                .any(|pixel| *pixel != 0)
+        })
+        .unwrap_or(0);
+    let end_nonempty_row = (0..DOS_SHIP_SPRITE_WIDTH)
+        .rfind(|row| {
+            let start = row * DOS_CAR_SOURCE_WIDTH;
+            slot_pixels[start..start + DOS_CAR_SOURCE_WIDTH]
+                .iter()
+                .any(|pixel| *pixel != 0)
+        })
+        .map(|row| row + 1)
+        .unwrap_or(DOS_SHIP_SPRITE_WIDTH);
+    let first_pixel = first_nonempty_row * DOS_CAR_SOURCE_WIDTH;
+    let end_pixel = end_nonempty_row * DOS_CAR_SOURCE_WIDTH;
+    let pixels = slot_pixels[first_pixel..end_pixel].to_vec();
+
+    // CARS.LZS stores every sprite in a fixed 30-row by 24-column slot. The
+    // renderer consumes the non-padding rows as a clockwise-rotated sprite.
+    // Only outer empty rows are padding: retaining empty rows inside a slot is
+    // essential for the later explosion frames.
+    let source_sprite = ImageFrame {
+        offset: 0,
+        x_offset: 0,
+        y_offset: 0,
+        width: DOS_CAR_SOURCE_WIDTH as u16,
+        height: (end_nonempty_row - first_nonempty_row) as u16,
+        pixels,
+        palette: source.palette.clone(),
+        transparent_zero: source.transparent_zero,
+    };
+    Some(rotate_sprite_cw(source_sprite))
+}
+
 fn collect_sprite_group(sprites: &[ImageFrame], start_index: usize) -> Vec<ImageFrame> {
     sprites[start_index..start_index + 3]
         .iter()
@@ -2853,6 +3260,27 @@ fn rotate_sprite_cw(sprite: ImageFrame) -> ImageFrame {
         y_offset: 0,
         width: new_width as u16,
         height: new_height as u16,
+        pixels,
+        palette: sprite.palette,
+        transparent_zero: sprite.transparent_zero,
+    }
+}
+
+fn transpose_sprite(sprite: ImageFrame) -> ImageFrame {
+    let width = usize::from(sprite.width);
+    let height = usize::from(sprite.height);
+    let mut pixels = vec![0; width * height];
+    for y in 0..height {
+        for x in 0..width {
+            pixels[x * height + y] = sprite.pixels[y * width + x];
+        }
+    }
+    ImageFrame {
+        offset: sprite.offset,
+        x_offset: 0,
+        y_offset: 0,
+        width: height as u16,
+        height: width as u16,
         pixels,
         palette: sprite.palette,
         transparent_zero: sprite.transparent_zero,
@@ -2931,6 +3359,25 @@ fn text_pixel_width(text: &str, scale: usize) -> i32 {
     (text.chars().count() as i32 * glyph_width).saturating_sub(scale as i32)
 }
 
+fn display_mode_label(mode: DisplayMode) -> &'static str {
+    match mode {
+        DisplayMode::Windowed => "WINDOWED",
+        DisplayMode::BorderlessDesktop => "BORDERLESS",
+        DisplayMode::ExclusiveFullscreen => "EXCLUSIVE",
+    }
+}
+
+fn video_mode_label(mode: Option<VideoMode>) -> String {
+    let Some(mode) = mode else {
+        return "UNAVAILABLE".to_string();
+    };
+    let refresh = mode
+        .refresh_hz()
+        .map(|refresh_hz| format!("{refresh_hz}HZ"))
+        .unwrap_or_else(|| "AUTO".to_string());
+    format!("{}X{} {refresh}", mode.width(), mode.height())
+}
+
 fn glyph_rows(ch: char) -> Option<[u8; 5]> {
     Some(match ch.to_ascii_uppercase() {
         'A' => [0b010, 0b101, 0b111, 0b101, 0b101],
@@ -2975,9 +3422,16 @@ fn glyph_rows(ch: char) -> Option<[u8; 5]> {
 }
 
 pub fn frame_hash(frame: &FrameBuffer320x200) -> u64 {
-    frame.pixels_rgba.iter().fold(0u64, |acc, value| {
-        acc.wrapping_mul(16777619).wrapping_add(u64::from(*value))
-    })
+    let hash_bytes = |hash: u64, bytes: &[u8]| {
+        bytes.iter().fold(hash, |acc, value| {
+            acc.wrapping_mul(16777619).wrapping_add(u64::from(*value))
+        })
+    };
+    let mut hash = hash_bytes(0, &frame.pixels_indexed);
+    for color in frame.palette.colors() {
+        hash = hash_bytes(hash, &[color.r, color.g, color.b]);
+    }
+    hash
 }
 
 #[cfg(test)]
@@ -2986,7 +3440,7 @@ mod tests {
 
     use skyroads_core::{
         AppInput, AttractModeApp, ControlMode, DisplaySettings, GoMenuScene, GoMenuSelection,
-        RenderScene, SettingsMenuCursor, SettingsMenuScene,
+        RenderScene, RoadRenderRow, SettingsMenuCursor, SettingsMenuScene, ShipState, VideoMode,
     };
     use skyroads_data::{
         level_from_road_entry, load_demo_rec_path, load_roads_lzs_path,
@@ -2994,13 +3448,14 @@ mod tests {
     };
 
     use super::{
-        build_dos_ship_pipeline, clip_window_for_screen_y, derive_ship_visual_state,
-        dos_ship_vertical_state, frame_hash, ship_screen_placement, should_draw_game_over_overlay,
-        sprite_nontransparent_bounds, AttractModeAssets, CarAtlas, DerivedShipVisualState,
-        DosShipPipeline, FrameBuffer320x200, ReferenceRenderer, ShipScreenPlacement,
-        ShipSpriteKind, DOS_EXPLOSION_ANIMATION_TICKS, DOS_NON_ALIVE_ANIMATION_TICKS,
+        build_dos_ship_clip_mask, build_dos_ship_pipeline, derive_ship_visual_state,
+        dos_mode13_color_index, dos_ship_vertical_state, frame_hash, ship_screen_placement,
+        sprite_nontransparent_bounds, text_pixel_width, video_mode_label, AttractModeAssets,
+        CarAtlas, DerivedShipVisualState, DosRenderSide, DosShipPipeline, FrameBuffer320x200,
+        ReferenceRenderer, ShipScreenPlacement, ShipSpriteKind, DOS_SHIP_BOUNDARY_ROW_COUNT,
         DOS_SHIP_CLIP_MASK_BYTES, DOS_SHIP_SHADOW_MASK_HEIGHT, DOS_SHIP_SHADOW_MASK_WIDTH,
-        GO_MENU_SELECTION_COLOR, GO_MENU_SELECTION_OUTLINE,
+        DOS_SHIP_SPRITE_WIDTH, SETTINGS_WIDGET_HEIGHT, SETTINGS_WIDGET_TEXT_PADDING,
+        SETTINGS_WIDGET_TOP, SETTINGS_WIDGET_WIDTH,
     };
 
     #[derive(Debug, Clone, Copy)]
@@ -3026,6 +3481,36 @@ mod tests {
 
     fn dos_ship_tables() -> ExeShipRuntimeTables {
         shipped_ship_runtime_tables()
+    }
+
+    #[test]
+    fn mode13_color_mapping_matches_captured_runtime_tables() {
+        const DUMP_START: usize = 0x0312;
+        const LEFT_TABLE_START: usize = 0x0322;
+        const RIGHT_TABLE_START: usize = 0x0323;
+        const TABLE_STRIDE: usize = 4;
+
+        let path = repo_root().join(
+            "fixtures/dos-gameplay-renderer/road0-steady-neutral/steady-neutral/dumps/vga_raster_tables.bin",
+        );
+        let runtime_tables = std::fs::read(path).expect("read captured VGA raster tables");
+
+        for color_code in 0_u8..=73 {
+            let entry_offset = usize::from(color_code) * TABLE_STRIDE;
+            let captured_left = runtime_tables[LEFT_TABLE_START - DUMP_START + entry_offset];
+            let captured_right = runtime_tables[RIGHT_TABLE_START - DUMP_START + entry_offset];
+
+            assert_eq!(
+                dos_mode13_color_index(color_code, DosRenderSide::Left),
+                captured_left,
+                "left raster color code {color_code}"
+            );
+            assert_eq!(
+                dos_mode13_color_index(color_code, DosRenderSide::Right),
+                captured_right,
+                "right raster color code {color_code}"
+            );
+        }
     }
 
     fn make_app() -> AttractModeApp {
@@ -3058,13 +3543,39 @@ mod tests {
     }
 
     fn enter_gameplay(app: &mut AttractModeApp) {
+        enter_gameplay_road(app, 1);
+    }
+
+    fn enter_gameplay_road(app: &mut AttractModeApp, road_index: usize) {
         skip_intro_to_main_menu(app);
         open_go_menu(app);
+
+        let selection = GoMenuSelection::from_road_index(road_index);
+        for _ in 0..selection.world_column() {
+            app.tick(AppInput {
+                right: true,
+                ..AppInput::default()
+            });
+        }
+        let down_count = selection.world_row() * 3 + selection.road_index_in_world;
+        for _ in 0..down_count {
+            app.tick(AppInput {
+                down: true,
+                ..AppInput::default()
+            });
+        }
+
         let tick = app.tick(AppInput {
             enter: true,
             ..AppInput::default()
         });
-        assert!(matches!(tick.render_scene, RenderScene::Gameplay(_)));
+        let RenderScene::Gameplay(scene) = tick.render_scene else {
+            panic!("expected gameplay after selecting road {road_index}");
+        };
+        assert_eq!(
+            scene.world_index, selection.world_index,
+            "selected road {road_index} started in the wrong world"
+        );
     }
 
     fn enter_demo_playback(app: &mut AttractModeApp) {
@@ -3102,6 +3613,26 @@ mod tests {
         scene.expect("expected at least one gameplay step")
     }
 
+    fn gameplay_scene_for_road_after_steps(
+        road_index: usize,
+        input: AppInput,
+        steps: usize,
+    ) -> skyroads_core::DemoPlaybackState {
+        let mut app = make_app();
+        enter_gameplay_road(&mut app, road_index);
+
+        let mut scene = None;
+        for _ in 0..steps {
+            let tick = app.tick(input);
+            let RenderScene::Gameplay(current) = tick.render_scene else {
+                panic!("expected gameplay render scene for road {road_index}");
+            };
+            scene = Some(current);
+        }
+
+        scene.expect("expected at least one gameplay step")
+    }
+
     fn gameplay_scenes_after_steps(
         input: AppInput,
         steps: usize,
@@ -3119,6 +3650,224 @@ mod tests {
         }
 
         scenes
+    }
+
+    fn gameplay_scene_after_inputs(
+        inputs: impl IntoIterator<Item = AppInput>,
+    ) -> skyroads_core::DemoPlaybackState {
+        gameplay_scene_for_road_after_inputs(1, inputs)
+    }
+
+    fn gameplay_scene_for_road_after_inputs(
+        road_index: usize,
+        inputs: impl IntoIterator<Item = AppInput>,
+    ) -> skyroads_core::DemoPlaybackState {
+        let mut app = make_app();
+        enter_gameplay_road(&mut app, road_index);
+
+        let mut scene = None;
+        for input in inputs {
+            let tick = app.tick(input);
+            let RenderScene::Gameplay(current) = tick.render_scene else {
+                panic!("expected gameplay render scene for road {road_index}");
+            };
+            scene = Some(current);
+        }
+
+        scene.expect("expected at least one gameplay input")
+    }
+
+    fn move_scene_to_road_position(
+        mut scene: skyroads_core::DemoPlaybackState,
+        road_index: usize,
+        z_position: f64,
+    ) -> skyroads_core::DemoPlaybackState {
+        let roads = load_roads_lzs_path(repo_root().join("ROADS.LZS")).unwrap();
+        let level = level_from_road_entry(&roads.roads[road_index]);
+        let current_row = (z_position * 8.0).floor() as usize;
+        let current_group = current_row >> 3;
+        let start_row = current_group.saturating_sub(3);
+        let end_row = (current_group + 8).min(level.length());
+
+        scene.ship.z_position = z_position;
+        scene.snapshot.z_position = z_position;
+        scene.current_row = current_row;
+        scene.fractional_z = z_position - current_row as f64 / 8.0;
+        scene.rows = (start_row..end_row)
+            .map(|row_index| RoadRenderRow {
+                row_index,
+                cells: *level.row(row_index).expect("scene row must exist"),
+            })
+            .collect();
+        scene.render_context.active_trekdat_slot = current_row & 7;
+        scene
+    }
+
+    fn set_terminal_state(
+        scene: &mut skyroads_core::DemoPlaybackState,
+        state: ShipState,
+        non_alive_frame_count: usize,
+    ) {
+        scene.craft_state = state;
+        scene.snapshot.craft_state = state;
+        scene.ship.state = state;
+        scene.ship.non_alive_frame_count = non_alive_frame_count;
+        scene.ship.explosion_timer = 0;
+        if state == ShipState::OutOfOxygen {
+            scene.snapshot.oxygen_percent = 0.0;
+            scene.dashboard.oxygen_percent = if non_alive_frame_count == 1 {
+                1.0 / 0x7530 as f64
+            } else {
+                0.0
+            };
+        }
+        if state == ShipState::OutOfFuel {
+            scene.snapshot.fuel_percent = 0.0;
+            scene.dashboard.fuel_percent = 0.0;
+        }
+    }
+
+    fn assert_scene_matches_dos_fixture(
+        renderer: &ReferenceRenderer,
+        mut scene: skyroads_core::DemoPlaybackState,
+        fixture_path: &str,
+    ) {
+        use sha2::{Digest, Sha256};
+
+        let fixture_root = repo_root().join(fixture_path);
+        let dos_frame = std::fs::read(fixture_root.join("frame.indices")).unwrap();
+        let dos_palette = std::fs::read(fixture_root.join("palette.vga6")).unwrap();
+        let manifest = std::fs::read(fixture_root.join("fixture.json")).unwrap();
+        let manifest: serde_json::Value = serde_json::from_slice(&manifest).unwrap();
+        if let Some(visible_count) =
+            manifest["framebuffer_context"]["speed_gauge_visible_count"].as_u64()
+        {
+            scene.dashboard.speed_gauge_visible_count = visible_count as usize;
+        }
+        if let Some(visible_count) =
+            manifest["framebuffer_context"]["lift_indicator_visible_count"].as_u64()
+        {
+            scene.dashboard.lift_indicator_visible_count = visible_count as usize;
+        }
+        if let Some(ship_sprite_phase) =
+            manifest["framebuffer_context"]["ship_sprite_phase"].as_u64()
+        {
+            scene.render_context.ship_sprite_phase = ship_sprite_phase as usize;
+        }
+        let frame = renderer.render_scene(&RenderScene::Gameplay(scene));
+        let native_palette = frame
+            .palette
+            .colors()
+            .iter()
+            .flat_map(|color| [color.r / 4, color.g / 4, color.b / 4])
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            dos_frame.len(),
+            super::FRAMEBUFFER_WIDTH * super::FRAMEBUFFER_HEIGHT,
+            "{fixture_path} has an invalid indexed-frame length"
+        );
+        assert_eq!(
+            dos_palette.len(),
+            256 * 3,
+            "{fixture_path} has an invalid VGA-palette length"
+        );
+        assert_eq!(
+            frame.pixels_indexed.len(),
+            dos_frame.len(),
+            "{fixture_path} native and DOS frame lengths differ"
+        );
+        assert_eq!(
+            native_palette.len(),
+            dos_palette.len(),
+            "{fixture_path} native and DOS palette lengths differ"
+        );
+
+        let file_sha256 = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
+        let expected_frame_sha256 = manifest["frame_sha256"]
+            .as_str()
+            .expect("fixture manifest must contain frame_sha256");
+        let expected_palette_sha256 = manifest["dumps"]
+            .as_array()
+            .expect("fixture manifest dumps must be an array")
+            .iter()
+            .find(|dump| dump["file"] == "palette.vga6")
+            .and_then(|dump| dump["sha256"].as_str())
+            .expect("fixture manifest must contain the palette SHA-256");
+
+        assert_eq!(
+            file_sha256(&dos_frame),
+            expected_frame_sha256,
+            "{fixture_path} indexed-frame hash differs from its manifest"
+        );
+        assert_eq!(
+            file_sha256(&dos_palette),
+            expected_palette_sha256,
+            "{fixture_path} VGA-palette hash differs from its manifest"
+        );
+
+        let pixel_mismatches = frame
+            .pixels_indexed
+            .iter()
+            .zip(&dos_frame)
+            .filter(|(native, dos)| native != dos)
+            .count();
+        let mismatch_bounds = frame
+            .pixels_indexed
+            .iter()
+            .zip(&dos_frame)
+            .enumerate()
+            .filter(|(_, (native, dos))| native != dos)
+            .fold(
+                None::<(usize, usize, usize, usize)>,
+                |bounds, (index, _)| {
+                    let x = index % super::FRAMEBUFFER_WIDTH;
+                    let y = index / super::FRAMEBUFFER_WIDTH;
+                    Some(match bounds {
+                        None => (x, y, x, y),
+                        Some((min_x, min_y, max_x, max_y)) => {
+                            (min_x.min(x), min_y.min(y), max_x.max(x), max_y.max(y))
+                        }
+                    })
+                },
+            );
+        let first_mismatches = frame
+            .pixels_indexed
+            .iter()
+            .zip(&dos_frame)
+            .enumerate()
+            .filter(|(_, (native, dos))| native != dos)
+            .take(8)
+            .map(|(index, (native, dos))| {
+                (
+                    index % super::FRAMEBUFFER_WIDTH,
+                    index / super::FRAMEBUFFER_WIDTH,
+                    *native,
+                    *dos,
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut mismatch_pairs = std::collections::BTreeMap::new();
+        for (native, dos) in frame.pixels_indexed.iter().zip(&dos_frame) {
+            if native != dos {
+                *mismatch_pairs.entry((*native, *dos)).or_insert(0usize) += 1;
+            }
+        }
+        let palette_mismatches = native_palette
+            .iter()
+            .zip(&dos_palette)
+            .filter(|(native, dos)| native != dos)
+            .count();
+        assert_eq!(
+            pixel_mismatches, 0,
+            "{fixture_path} differs in {pixel_mismatches} indexed pixels within \
+             {mismatch_bounds:?}; pairs: {mismatch_pairs:?}; first mismatches \
+             (x, y, native, DOS): {first_mismatches:?}"
+        );
+        assert_eq!(
+            palette_mismatches, 0,
+            "{fixture_path} differs in {palette_mismatches} palette components"
+        );
     }
 
     fn demo_scene_after_steps(steps: usize) -> skyroads_core::DemoPlaybackState {
@@ -3139,7 +3888,7 @@ mod tests {
 
     fn placement_probe(scene: &skyroads_core::DemoPlaybackState) -> PlacementProbe {
         let ship_tables = dos_ship_tables();
-        let visual = derive_ship_visual_state(scene, &ship_tables);
+        let visual = derive_ship_visual_state(scene);
         let placement = ship_screen_placement(scene, &visual, &ship_tables);
         PlacementProbe {
             frame_index: scene.frame_index,
@@ -3160,7 +3909,7 @@ mod tests {
 
     fn frame_non_background_bounds(
         frame: &FrameBuffer320x200,
-        background: RgbColor,
+        background_index: u8,
     ) -> Option<(usize, usize, usize, usize)> {
         let width = usize::from(frame.width);
         let height = usize::from(frame.height);
@@ -3172,13 +3921,10 @@ mod tests {
 
         for y in 0..height {
             for x in 0..width {
-                let offset = (y * width + x) * 4;
-                let pixel = RgbColor::new(
-                    frame.pixels_rgba[offset],
-                    frame.pixels_rgba[offset + 1],
-                    frame.pixels_rgba[offset + 2],
-                );
-                if pixel == background {
+                let pixel_index = frame
+                    .pixel_index(x, y)
+                    .expect("test coordinate must be inside the framebuffer");
+                if pixel_index == background_index {
                     continue;
                 }
                 min_x = min_x.min(x);
@@ -3193,12 +3939,9 @@ mod tests {
     }
 
     fn frame_pixel(frame: &FrameBuffer320x200, x: usize, y: usize) -> RgbColor {
-        let offset = (y * usize::from(frame.width) + x) * 4;
-        RgbColor::new(
-            frame.pixels_rgba[offset],
-            frame.pixels_rgba[offset + 1],
-            frame.pixels_rgba[offset + 2],
-        )
+        frame
+            .pixel_color(x, y)
+            .expect("test coordinate must be inside the framebuffer")
     }
 
     fn frame_region_differs(
@@ -3233,10 +3976,266 @@ mod tests {
             GoMenuSelection::from_road_index(1),
         )));
 
-        assert_eq!(frame_pixel(&frame, 6, 10), GO_MENU_SELECTION_OUTLINE);
-        assert_eq!(frame_pixel(&frame, 7, 11), GO_MENU_SELECTION_COLOR);
-        assert_eq!(frame_pixel(&frame, 61, 10), GO_MENU_SELECTION_OUTLINE);
-        assert_eq!(frame_pixel(&frame, 60, 11), GO_MENU_SELECTION_COLOR);
+        let outline_index = frame.pixel_index(6, 10).unwrap();
+        let selection_index = frame.pixel_index(7, 11).unwrap();
+        assert_ne!(outline_index, 0);
+        assert_ne!(selection_index, 0);
+        assert_ne!(outline_index, selection_index);
+        assert_eq!(frame.pixel_index(61, 10), Some(outline_index));
+        assert_eq!(frame.pixel_index(60, 11), Some(selection_index));
+    }
+
+    #[test]
+    fn gameplay_background_renders_sky_via_recovered_palette() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+        let mut frame = FrameBuffer320x200::with_palette(renderer.gameplay_vga_palette(0));
+        frame.clear(RgbColor::new(0, 0, 0));
+        renderer.draw_world_background(&mut frame, 0);
+
+        // The world 0 ("Red Heat") sky/sun occupies the upper rows using palette
+        // indices beyond the world's 114-color CMAP. Before the gameplay palette
+        // was wired in, those pixels were dropped and the sky stayed black.
+        let mut non_black = 0usize;
+        for y in 0..60usize {
+            for x in 0..320usize {
+                if frame.pixel_index(x, y).is_some_and(|index| index != 0) {
+                    non_black += 1;
+                }
+            }
+        }
+        assert!(
+            non_black > 2000,
+            "world background sky must render via the recovered gameplay palette (non_black={non_black})"
+        );
+    }
+
+    #[test]
+    fn steady_neutral_gameplay_frame_matches_dos_oracle() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+        let scene = gameplay_scene_after_steps(AppInput::default(), 8);
+        assert_scene_matches_dos_fixture(
+            &renderer,
+            scene,
+            "fixtures/dos-gameplay-renderer/road0-steady-neutral/steady-neutral",
+        );
+    }
+
+    #[test]
+    fn road5_dispatch_kinds2_4_frame_matches_dos_oracle() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+        let scene = gameplay_scene_for_road_after_steps(5, AppInput::default(), 8);
+        assert_scene_matches_dos_fixture(
+            &renderer,
+            scene,
+            "fixtures/dos-gameplay-renderer/road5-dispatch-kinds2-4/dispatch-kinds2-4",
+        );
+    }
+
+    #[test]
+    fn road9_dispatch_kind5_frame_matches_dos_oracle() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+        let scene = gameplay_scene_for_road_after_steps(9, AppInput::default(), 6);
+        assert_scene_matches_dos_fixture(
+            &renderer,
+            scene,
+            "fixtures/dos-gameplay-renderer/road9-dispatch-kind5/dispatch-kind5",
+        );
+    }
+
+    #[test]
+    fn road20_dispatch_kind1_frame_matches_dos_oracle() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+        let scene = gameplay_scene_for_road_after_steps(20, AppInput::default(), 6);
+        assert_scene_matches_dos_fixture(
+            &renderer,
+            scene,
+            "fixtures/dos-gameplay-renderer/road20-dispatch-kind1/dispatch-kind1",
+        );
+    }
+
+    #[test]
+    fn road26_dispatch_kind3_frame_matches_dos_oracle() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+        let scene = gameplay_scene_for_road_after_steps(
+            26,
+            AppInput {
+                up_held: true,
+                ..AppInput::default()
+            },
+            62,
+        );
+        assert_scene_matches_dos_fixture(
+            &renderer,
+            scene,
+            "fixtures/dos-gameplay-renderer/road26-dispatch-kind3/dispatch-kind3",
+        );
+    }
+
+    #[test]
+    fn all_five_shadow_variants_match_dos_oracles() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+        let throttle = AppInput {
+            up_held: true,
+            ..AppInput::default()
+        };
+        let jump = AppInput {
+            up_held: true,
+            space_held: true,
+            ..AppInput::default()
+        };
+
+        for (road_index, trailing_throttle_frames, fixture_path) in [
+            (
+                1,
+                1,
+                "fixtures/dos-gameplay-renderer/road1-shadow-variant3/shadow-variant3",
+            ),
+            (
+                1,
+                2,
+                "fixtures/dos-gameplay-renderer/road1-shadow-variant4/shadow-variant4",
+            ),
+            (
+                26,
+                1,
+                "fixtures/dos-gameplay-renderer/road26-shadow-variant2/shadow-variant2",
+            ),
+        ] {
+            let inputs = std::iter::repeat_n(throttle, 8)
+                .chain(std::iter::once(jump))
+                .chain(std::iter::repeat_n(throttle, trailing_throttle_frames));
+            let scene = gameplay_scene_for_road_after_inputs(road_index, inputs);
+            assert_scene_matches_dos_fixture(&renderer, scene, fixture_path);
+        }
+    }
+
+    #[test]
+    fn fallen_and_explosion_progression_match_dos_oracles() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+        let throttle = AppInput {
+            up_held: true,
+            ..AppInput::default()
+        };
+        for (road_index, steps, fixture_path) in [
+            (
+                2,
+                42,
+                "fixtures/dos-gameplay-renderer/road2-terminal-scan/terminal-scan-40",
+            ),
+            (
+                30,
+                52,
+                "fixtures/dos-gameplay-renderer/road30-explosion-scan/explosion-scan-47",
+            ),
+            (
+                30,
+                55,
+                "fixtures/dos-gameplay-renderer/road30-explosion-scan/explosion-scan-50",
+            ),
+            (
+                30,
+                61,
+                "fixtures/dos-gameplay-renderer/road30-explosion-scan/explosion-scan-56",
+            ),
+        ] {
+            let scene = gameplay_scene_for_road_after_steps(road_index, throttle, steps);
+            assert_scene_matches_dos_fixture(&renderer, scene, fixture_path);
+        }
+    }
+
+    #[test]
+    fn resource_death_and_delayed_game_over_match_dos_oracles() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+
+        for (non_alive_frame_count, fixture_path) in [
+            (
+                1,
+                "fixtures/dos-gameplay-renderer/road0-out-of-oxygen/fresh-out-of-oxygen",
+            ),
+            (
+                0x6B,
+                "fixtures/dos-gameplay-renderer/road0-out-of-oxygen/delayed-game-over",
+            ),
+        ] {
+            let mut scene = gameplay_scene_after_steps(AppInput::default(), 8);
+            set_terminal_state(&mut scene, ShipState::OutOfOxygen, non_alive_frame_count);
+            assert_scene_matches_dos_fixture(&renderer, scene, fixture_path);
+        }
+    }
+
+    #[test]
+    fn final_tunnel_exit_frame_matches_dos_oracle() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+        let scene = gameplay_scene_for_road_after_steps(1, AppInput::default(), 8);
+        let scene = move_scene_to_road_position(scene, 1, 53.0);
+
+        assert_scene_matches_dos_fixture(
+            &renderer,
+            scene,
+            "fixtures/dos-gameplay-renderer/road1-tunnel-exit-win/tunnel-exit-win",
+        );
+    }
+
+    #[test]
+    fn road0_movement_frames_match_dos_oracle() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+
+        for (input, fixture_path) in [
+            (
+                AppInput {
+                    up_held: true,
+                    ..AppInput::default()
+                },
+                "fixtures/dos-gameplay-renderer/road0-sustained-throttle/sustained-throttle",
+            ),
+            (
+                AppInput {
+                    up_held: true,
+                    left_held: true,
+                    ..AppInput::default()
+                },
+                "fixtures/dos-gameplay-renderer/road0-steady-left/steady-left",
+            ),
+            (
+                AppInput {
+                    up_held: true,
+                    right_held: true,
+                    ..AppInput::default()
+                },
+                "fixtures/dos-gameplay-renderer/road0-steady-right/steady-right",
+            ),
+        ] {
+            let scene = gameplay_scene_after_steps(input, 28);
+            assert_scene_matches_dos_fixture(&renderer, scene, fixture_path);
+        }
+
+        let throttle = AppInput {
+            up_held: true,
+            ..AppInput::default()
+        };
+        let jump = AppInput {
+            up_held: true,
+            space_held: true,
+            ..AppInput::default()
+        };
+        let inputs = std::iter::repeat_n(throttle, 8).chain(std::iter::once(jump));
+        let scene = gameplay_scene_after_inputs(inputs);
+        assert_scene_matches_dos_fixture(
+            &renderer,
+            scene,
+            "fixtures/dos-gameplay-renderer/road0-first-airborne/first-airborne",
+        );
     }
 
     #[test]
@@ -3270,11 +4269,8 @@ mod tests {
 
         assert_ne!(frame_hash(&default_frame), frame_hash(&right_frame));
         assert_ne!(frame_hash(&default_frame), frame_hash(&down_frame));
-        assert_eq!(
-            frame_pixel(&right_frame, 166, 10),
-            GO_MENU_SELECTION_OUTLINE
-        );
-        assert_eq!(frame_pixel(&down_frame, 61, 19), GO_MENU_SELECTION_OUTLINE);
+        assert_ne!(right_frame.pixel_index(166, 10), Some(0));
+        assert_ne!(down_frame.pixel_index(61, 19), Some(0));
     }
 
     #[test]
@@ -3303,7 +4299,6 @@ mod tests {
         let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
         let renderer = ReferenceRenderer::new(assets);
         let car_atlas = renderer.car_atlas.as_ref().unwrap();
-        let background = RgbColor::new(255, 0, 255);
 
         for index in 0..car_atlas.exact_ship_frames_raw.len() {
             let visual = DerivedShipVisualState {
@@ -3312,6 +4307,7 @@ mod tests {
                 jumping: false,
                 explosion_frame: 0,
                 exact_ship_frame_index: Some(index),
+                thrust_phase: 0,
                 on_surface: true,
             };
             let placement = ShipScreenPlacement {
@@ -3330,13 +4326,14 @@ mod tests {
                 shadow_surface_mask: [1; DOS_SHIP_SHADOW_MASK_HEIGHT * DOS_SHIP_SHADOW_MASK_WIDTH],
                 shadow_variant: None,
             };
-            let mut frame = FrameBuffer320x200::new();
-            frame.clear(background);
+            let mut frame = FrameBuffer320x200::with_palette(renderer.gameplay_vga_palette(0));
+            let background_index = 255;
+            frame.pixels_indexed.fill(background_index);
 
             renderer.draw_ship_sprite(&mut frame, 0, &visual, &mut pipeline);
 
-            let rendered_bounds =
-                frame_non_background_bounds(&frame, background).expect("expected ship pixels");
+            let rendered_bounds = frame_non_background_bounds(&frame, background_index)
+                .expect("expected ship pixels");
             let raw_bounds = sprite_nontransparent_bounds(&car_atlas.exact_ship_frames_raw[index])
                 .expect("expected raw sprite pixels");
 
@@ -3364,12 +4361,46 @@ mod tests {
     }
 
     #[test]
+    fn exact_explosion_frames_match_captured_active_buffers() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let source = &assets.cars.frames[0][0];
+        for (frame_index, thrust_phase, fixture_path) in [
+            (
+                0,
+                2,
+                "fixtures/dos-gameplay-renderer/road30-explosion-scan/explosion-scan-47/dumps/active_ship_sprite.bin",
+            ),
+            (
+                1,
+                2,
+                "fixtures/dos-gameplay-renderer/road30-explosion-scan/explosion-scan-50/dumps/active_ship_sprite.bin",
+            ),
+            (
+                3,
+                1,
+                "fixtures/dos-gameplay-renderer/road30-explosion-scan/explosion-scan-56/dumps/active_ship_sprite.bin",
+            ),
+        ] {
+            let captured = std::fs::read(repo_root().join(fixture_path)).unwrap();
+            let slot_start = frame_index * super::DOS_CAR_SLOT_BYTES;
+            let native = source.pixels
+                [slot_start..slot_start + super::DOS_CAR_SPRITE_BYTES]
+                .iter()
+                .copied()
+                .map(|pixel| super::dos_ship_pixel_index(pixel, thrust_phase))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                native, captured,
+                "fixed CARS.LZS slot {frame_index} differs from {fixture_path}"
+            );
+        }
+    }
+
+    #[test]
     fn flat_opening_road_does_not_clip_ship_when_steering() {
         let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
         let renderer = ReferenceRenderer::new(assets);
         let car_atlas = renderer.car_atlas.as_ref().unwrap();
-        let background = RgbColor::new(255, 0, 255);
-
         for input in [
             AppInput {
                 up_held: true,
@@ -3393,7 +4424,7 @@ mod tests {
                 scene.current_row
             );
 
-            let visual = derive_ship_visual_state(&scene, &renderer.assets.dos_ship_tables);
+            let visual = derive_ship_visual_state(&scene);
             let exact_frame_index = visual
                 .exact_ship_frame_index
                 .expect("expected live steering scene to use an exact ship frame");
@@ -3405,13 +4436,14 @@ mod tests {
                 &visual,
             );
             let placement = pipeline.placement;
-            let mut frame = FrameBuffer320x200::new();
-            frame.clear(background);
+            let mut frame = FrameBuffer320x200::with_palette(renderer.gameplay_vga_palette(0));
+            let background_index = 255;
+            frame.pixels_indexed.fill(background_index);
 
             renderer.draw_ship_sprite(&mut frame, scene.frame_index, &visual, &mut pipeline);
 
-            let rendered_bounds =
-                frame_non_background_bounds(&frame, background).expect("expected ship pixels");
+            let rendered_bounds = frame_non_background_bounds(&frame, background_index)
+                .expect("expected ship pixels");
             let raw_bounds =
                 sprite_nontransparent_bounds(&car_atlas.exact_ship_frames_raw[exact_frame_index])
                     .expect("expected raw ship pixels");
@@ -3441,11 +4473,8 @@ mod tests {
         let mut ship_pixels = 0usize;
         for y in 0..72 {
             for x in 0..64 {
-                let offset = (y * usize::from(frame.width) + x) * 4;
-                let r = frame.pixels_rgba[offset];
-                let g = frame.pixels_rgba[offset + 1];
-                let b = frame.pixels_rgba[offset + 2];
-                if b > 90 && b > r && b > g {
+                let color = frame_pixel(&frame, x, y);
+                if color.b > 90 && color.b > color.r && color.b > color.g {
                     ship_pixels += 1;
                 }
             }
@@ -3458,42 +4487,80 @@ mod tests {
     }
 
     #[test]
-    fn road_coverage_clip_window_prefers_span_containing_ship_center() {
-        let mut coverage = FrameBuffer320x200::new();
-        coverage.clear(RgbColor::new(0, 0, 0));
-        coverage.fill_rect(24, 80, 28, 1, RgbColor::new(255, 255, 255));
-        coverage.fill_rect(118, 80, 44, 1, RgbColor::new(255, 255, 255));
+    fn dos_ship_clip_mask_keeps_unobstructed_rows_visible() {
+        let boundaries = [0u16; DOS_SHIP_BOUNDARY_ROW_COUNT];
+        let mask = build_dos_ship_clip_mask(&boundaries, 256, 80, 0);
 
-        let window = clip_window_for_screen_y(&coverage, 80, 136).expect("expected coverage span");
+        assert!(mask.iter().all(|value| *value == 1));
+    }
 
-        assert_eq!(window, (118, 162));
+    #[test]
+    fn dos_ship_clip_mask_preserves_the_explosion_sentinel_rows() {
+        let boundaries = [0u16; DOS_SHIP_BOUNDARY_ROW_COUNT];
+        let mask = build_dos_ship_clip_mask(&boundaries, 256, 80, i32::from(i16::MAX));
+
+        assert_eq!(mask.iter().filter(|value| **value == 0).count(), 260);
+        assert_eq!(mask[DOS_SHIP_CLIP_MASK_BYTES - 1], 1);
+    }
+
+    #[test]
+    fn dos_ship_clip_mask_selects_the_ship_side_of_a_boundary() {
+        let mut boundaries = [0u16; DOS_SHIP_BOUNDARY_ROW_COUNT];
+        boundaries[77] = 20;
+
+        let left_mask = build_dos_ship_clip_mask(&boundaries, 240, 80, 0);
+        assert_eq!(
+            left_mask[..DOS_SHIP_SPRITE_WIDTH]
+                .iter()
+                .filter(|value| **value == 1)
+                .count(),
+            10
+        );
+
+        let right_mask = build_dos_ship_clip_mask(&boundaries, 285, 80, 0);
+        assert_eq!(
+            right_mask[..DOS_SHIP_SPRITE_WIDTH]
+                .iter()
+                .filter(|value| **value == 1)
+                .count(),
+            24
+        );
+        assert!(right_mask[..5].iter().all(|value| *value == 0));
     }
 
     #[test]
     fn airborne_alive_ship_keeps_shadow_variant() {
         let ship_tables = dos_ship_tables();
-        let scenes = gameplay_scenes_after_steps(
-            AppInput {
-                up_held: true,
-                space_held: true,
-                ..AppInput::default()
-            },
-            24,
-        );
-        let airborne_scene = scenes
-            .iter()
-            .find(|scene| {
-                scene.ship.state == skyroads_core::ShipState::Alive
-                    && (!scene.ship.is_on_ground || scene.ship.y_position > GROUND_Y)
-            })
-            .expect("expected a live airborne scene");
-        let visual = derive_ship_visual_state(airborne_scene, &ship_tables);
-        let pipeline = build_dos_ship_pipeline(airborne_scene, &ship_tables, None, &visual);
+        let throttle = AppInput {
+            up_held: true,
+            ..AppInput::default()
+        };
+        let jump = AppInput {
+            up_held: true,
+            space_held: true,
+            ..AppInput::default()
+        };
+        let mut variants = std::collections::BTreeSet::new();
+        for road_index in [1, 26] {
+            let mut app = make_app();
+            enter_gameplay_road(&mut app, road_index);
+            let inputs = std::iter::repeat_n(throttle, 8)
+                .chain(std::iter::once(jump))
+                .chain(std::iter::repeat_n(throttle, 18));
+            for input in inputs {
+                let tick = app.tick(input);
+                let RenderScene::Gameplay(scene) = tick.render_scene else {
+                    panic!("expected gameplay while collecting shadow variants");
+                };
+                let visual = derive_ship_visual_state(&scene);
+                let pipeline = build_dos_ship_pipeline(&scene, &ship_tables, None, &visual);
+                if let Some(variant) = pipeline.shadow_variant {
+                    variants.insert(variant);
+                }
+            }
+        }
 
-        assert!(
-            pipeline.shadow_variant.is_some(),
-            "expected live airborne ship to keep a DOS shadow variant"
-        );
+        assert_eq!(variants, std::collections::BTreeSet::from([0, 1, 2, 3, 4]));
     }
 
     #[test]
@@ -3519,30 +4586,175 @@ mod tests {
     }
 
     #[test]
+    fn main_menu_keeps_the_intro_background_palette() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+        let mut app = make_app();
+        skip_intro_to_main_menu(&mut app);
+
+        let menu = renderer.render_scene(&app.render_scene());
+        let expected_palette = super::archive_vga_palette(&renderer.assets().intro);
+
+        assert_eq!(menu.palette, expected_palette);
+        assert_ne!(
+            menu.palette,
+            super::archive_vga_palette(&renderer.assets().main_menu)
+        );
+    }
+
+    #[test]
     fn settings_menu_composes_base_and_overlay_fragments() {
         let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
         let renderer = ReferenceRenderer::new(assets);
+        let four_k = VideoMode::new(3840, 2160, Some(144)).unwrap();
 
         let keyboard = renderer.render_scene(&RenderScene::SettingsMenu(SettingsMenuScene {
             cursor: SettingsMenuCursor::Keyboard,
             control_mode: ControlMode::Keyboard,
             display_settings: DisplaySettings::default(),
+            selected_video_mode: None,
             sound_fx_enabled: true,
             music_enabled: true,
         }));
         let mouse = renderer.render_scene(&RenderScene::SettingsMenu(SettingsMenuScene {
-            cursor: SettingsMenuCursor::Borderless,
+            cursor: SettingsMenuCursor::VideoMode,
             control_mode: ControlMode::Mouse,
-            display_settings: DisplaySettings {
-                fullscreen: true,
-                borderless: true,
-            },
+            display_settings: DisplaySettings::ExclusiveFullscreen(four_k),
+            selected_video_mode: Some(four_k),
             sound_fx_enabled: false,
             music_enabled: false,
         }));
 
         assert_ne!(frame_hash(&keyboard), 0);
         assert_ne!(frame_hash(&keyboard), frame_hash(&mouse));
+    }
+
+    #[test]
+    fn settings_display_choice_changes_only_the_native_extension_strip() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+        let mode = VideoMode::new(3840, 2160, Some(144)).unwrap();
+        let render = |display_settings| {
+            renderer.render_scene(&RenderScene::SettingsMenu(SettingsMenuScene {
+                cursor: SettingsMenuCursor::Display,
+                control_mode: ControlMode::Keyboard,
+                display_settings,
+                selected_video_mode: Some(mode),
+                sound_fx_enabled: true,
+                music_enabled: true,
+            }))
+        };
+
+        let borderless = render(DisplaySettings::BorderlessDesktop);
+        let exclusive = render(DisplaySettings::ExclusiveFullscreen(mode));
+        assert_ne!(frame_hash(&borderless), frame_hash(&exclusive));
+
+        let extension_top = (SETTINGS_WIDGET_TOP - 2) as usize;
+        let extension_bottom = (SETTINGS_WIDGET_TOP + SETTINGS_WIDGET_HEIGHT + 2) as usize;
+        for (index, (borderless_pixel, exclusive_pixel)) in borderless
+            .pixels_indexed
+            .iter()
+            .zip(&exclusive.pixels_indexed)
+            .enumerate()
+        {
+            if borderless_pixel == exclusive_pixel {
+                continue;
+            }
+            let y = index / usize::from(borderless.width);
+            assert!(
+                (extension_top..extension_bottom).contains(&y),
+                "display choice changed a pixel outside the extension strip at y={y}"
+            );
+        }
+    }
+
+    #[test]
+    fn settings_video_mode_choice_renders_the_exact_selected_tuple() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+        let full_hd = VideoMode::new(1920, 1080, Some(60)).unwrap();
+        let four_k = VideoMode::new(3840, 2160, Some(144)).unwrap();
+        let render = |selected_video_mode| {
+            renderer.render_scene(&RenderScene::SettingsMenu(SettingsMenuScene {
+                cursor: SettingsMenuCursor::VideoMode,
+                control_mode: ControlMode::Keyboard,
+                display_settings: DisplaySettings::BorderlessDesktop,
+                selected_video_mode: Some(selected_video_mode),
+                sound_fx_enabled: true,
+                music_enabled: true,
+            }))
+        };
+
+        let full_hd_frame = render(full_hd);
+        let four_k_frame = render(four_k);
+
+        assert_ne!(frame_hash(&full_hd_frame), frame_hash(&four_k_frame));
+        for (index, (full_hd_pixel, four_k_pixel)) in full_hd_frame
+            .pixels_indexed
+            .iter()
+            .zip(&four_k_frame.pixels_indexed)
+            .enumerate()
+        {
+            if full_hd_pixel == four_k_pixel {
+                continue;
+            }
+            let x = index % usize::from(full_hd_frame.width);
+            let y = index / usize::from(full_hd_frame.width);
+            let video_widget_left = 208 - SETTINGS_WIDGET_WIDTH / 2;
+            let inside_video_widget = x >= video_widget_left as usize
+                && x < (video_widget_left + SETTINGS_WIDGET_WIDTH) as usize
+                && y >= SETTINGS_WIDGET_TOP as usize
+                && y < (SETTINGS_WIDGET_TOP + SETTINGS_WIDGET_HEIGHT) as usize;
+            assert!(
+                inside_video_widget,
+                "video mode changed a pixel outside its widget at ({x}, {y})"
+            );
+        }
+    }
+
+    #[test]
+    fn video_mode_value_is_dimmed_until_exclusive_mode_is_active() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+        let mode = VideoMode::new(3840, 2160, Some(144)).unwrap();
+        let render = |display_settings| {
+            renderer.render_scene(&RenderScene::SettingsMenu(SettingsMenuScene {
+                cursor: SettingsMenuCursor::Display,
+                control_mode: ControlMode::Keyboard,
+                display_settings,
+                selected_video_mode: Some(mode),
+                sound_fx_enabled: true,
+                music_enabled: true,
+            }))
+        };
+        let borderless = render(DisplaySettings::BorderlessDesktop);
+        let exclusive = render(DisplaySettings::ExclusiveFullscreen(mode));
+        let widget_left = 208 - SETTINGS_WIDGET_WIDTH / 2;
+        let changed_video_pixels = (SETTINGS_WIDGET_TOP
+            ..SETTINGS_WIDGET_TOP + SETTINGS_WIDGET_HEIGHT)
+            .flat_map(|y| (widget_left..widget_left + SETTINGS_WIDGET_WIDTH).map(move |x| (x, y)))
+            .filter(|(x, y)| {
+                borderless.pixel_index(*x as usize, *y as usize)
+                    != exclusive.pixel_index(*x as usize, *y as usize)
+            })
+            .count();
+
+        assert!(changed_video_pixels > 0);
+    }
+
+    #[test]
+    fn four_k_144_hz_label_fits_inside_video_mode_widget() {
+        let mode = VideoMode::new(3840, 2160, Some(144)).unwrap();
+        let label = video_mode_label(Some(mode));
+        let available_width = SETTINGS_WIDGET_WIDTH - SETTINGS_WIDGET_TEXT_PADDING * 2;
+
+        assert_eq!(label, "3840X2160 144HZ");
+        assert_eq!(video_mode_label(None), "UNAVAILABLE");
+        assert_eq!(
+            video_mode_label(VideoMode::new(3840, 2160, None)),
+            "3840X2160 AUTO"
+        );
+        assert!(text_pixel_width(&label, 1) <= available_width);
     }
 
     #[test]
@@ -3567,11 +4779,7 @@ mod tests {
         let mut non_black_pixels = 0usize;
         for y in 30..138 {
             for x in 0..usize::from(frame.width) {
-                let offset = (y * usize::from(frame.width) + x) * 4;
-                if frame.pixels_rgba[offset] != 0
-                    || frame.pixels_rgba[offset + 1] != 0
-                    || frame.pixels_rgba[offset + 2] != 0
-                {
+                if frame.pixel_index(x, y).is_some_and(|index| index != 0) {
                     non_black_pixels += 1;
                 }
             }
@@ -3609,11 +4817,8 @@ mod tests {
         let mut ship_pixels = 0usize;
         for y in 52..104 {
             for x in 120..200 {
-                let offset = (y * usize::from(frame.width) + x) * 4;
-                let r = frame.pixels_rgba[offset];
-                let g = frame.pixels_rgba[offset + 1];
-                let b = frame.pixels_rgba[offset + 2];
-                if b > 90 && b > r && b > g {
+                let color = frame_pixel(&frame, x, y);
+                if color.b > 90 && color.b > color.r && color.b > color.g {
                     ship_pixels += 1;
                 }
             }
@@ -3789,7 +4994,7 @@ mod tests {
         scene.snapshot.craft_state = skyroads_core::ShipState::Exploded;
         scene.ship.explosion_timer = 8;
 
-        let visual = derive_ship_visual_state(&scene, &dos_ship_tables());
+        let visual = derive_ship_visual_state(&scene);
         assert_eq!(visual.explosion_frame, 2);
     }
 
@@ -3807,83 +5012,12 @@ mod tests {
         scene.ship.y_position = GROUND_Y - 140.0;
 
         let ship_tables = dos_ship_tables();
-        let visual = derive_ship_visual_state(&scene, &ship_tables);
+        let visual = derive_ship_visual_state(&scene);
         let placement = ship_screen_placement(&scene, &visual, &ship_tables);
         assert!(
             placement.sprite_center_y > i32::from(skyroads_data::SCREEN_HEIGHT),
             "expected fallen ship to move off-screen instead of clamping in view, got y={}",
             placement.sprite_center_y
-        );
-    }
-
-    #[test]
-    fn game_over_overlay_waits_for_dos_explosion_window() {
-        let mut scene = gameplay_scene_after_steps(
-            AppInput {
-                up_held: true,
-                ..AppInput::default()
-            },
-            4,
-        );
-        scene.snapshot.craft_state = skyroads_core::ShipState::Exploded;
-        scene.ship.state = skyroads_core::ShipState::Exploded;
-        scene.ship.explosion_timer = DOS_EXPLOSION_ANIMATION_TICKS;
-        assert!(
-            !should_draw_game_over_overlay(&scene),
-            "expected fresh death frame to keep gameplay visible"
-        );
-
-        scene.ship.explosion_timer += 1;
-        assert!(
-            should_draw_game_over_overlay(&scene),
-            "expected overlay to appear after the delay elapsed"
-        );
-    }
-
-    #[test]
-    fn game_over_overlay_waits_for_dos_non_alive_window() {
-        let mut scene = gameplay_scene_after_steps(
-            AppInput {
-                up_held: true,
-                ..AppInput::default()
-            },
-            4,
-        );
-        scene.snapshot.craft_state = skyroads_core::ShipState::Fallen;
-        scene.ship.state = skyroads_core::ShipState::Fallen;
-        scene.ship.non_alive_frame_count = DOS_NON_ALIVE_ANIMATION_TICKS - 1;
-        assert!(
-            !should_draw_game_over_overlay(&scene),
-            "expected fallen ship to stay visible until the DOS death window ends"
-        );
-
-        scene.ship.non_alive_frame_count += 1;
-        assert!(
-            should_draw_game_over_overlay(&scene),
-            "expected fallen ship to hand over to the overlay after the DOS window"
-        );
-    }
-
-    #[test]
-    fn branding_draws_expected_bottom_text_pixels() {
-        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
-        let renderer = ReferenceRenderer::new(assets);
-        let mut frame = FrameBuffer320x200::new();
-        renderer.draw_branding(&mut frame, 184, 2, 1.0);
-
-        let mut bright_pixels = 0usize;
-        for y in 184..196 {
-            for x in 40..280 {
-                let offset = (y * usize::from(frame.width) + x) * 4;
-                if frame.pixels_rgba[offset] > 150 && frame.pixels_rgba[offset + 1] > 120 {
-                    bright_pixels += 1;
-                }
-            }
-        }
-
-        assert!(
-            bright_pixels > 200,
-            "expected visible branding pixels, found {bright_pixels}"
         );
     }
 }

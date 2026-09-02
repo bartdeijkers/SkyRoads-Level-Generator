@@ -67,6 +67,14 @@ These notes document technical reverse engineering and native-port work. Redistr
 - Each populated `MUZAX` song decompresses independently from its own file offset and all observed songs use widths `(6, 10, 12)`.
 - The first `num_instruments * 16` bytes of each decompressed song are OPL instrument blocks.
 - The remaining decompressed bytes are a stream of 2-byte music commands.
+- Song slots are `0` intro, `1` menu, and `2..13` the twelve road songs. The
+  DOS main loop chooses a road song randomly, advances by one when it would
+  immediately repeat the previous choice, and then adds the slot offset `2`.
+- The DOS PIT divisor is `0x19E4`, producing an approximately `180.02 Hz`
+  MUZAX command clock from the standard `1,193,182 Hz` PIT input.
+- Logical tracks `6..10` use YM3812 rhythm mode through register `0xBD` rather
+  than five independent melodic channels. Tracks `7..10` each program one
+  operator; track `6` is the two-operator bass drum.
 - For song 0, the decompressed layout is:
   - start offset `120`
   - `9` instruments
@@ -242,9 +250,9 @@ The native Rust workspace currently adds:
 - [`crates/skyroads-data`](/Users/ammaar/Development/skyroads/crates/skyroads-data): a no-dependency data crate that reproduces the shared SkyRoads decompressor plus exact `ROADS.LZS`, `DEMO.REC`, `TREKDAT.LZS`, `MUZAX.LZS`, `SKYROADS.EXE`, and level/collision semantics derived from the shipped road descriptors
 - [`crates/skyroads-core`](/Users/ammaar/Development/skyroads/crates/skyroads-core): a deterministic core layer that now covers exact demo sampling by fixed-point Z, row-level renderer planning, explicit gameplay-frame planning, a native gameplay session, and a top-level attract-mode app state machine for intro, menu, help, settings, demo playback, and live gameplay entry from the main menu
 - [`crates/skyroads-cli`](/Users/ammaar/Development/skyroads/crates/skyroads-cli): a verifier CLI that loads the original DOS assets, prints the native baseline summary, and can run a text-trace simulation of the shipped demo
-- [`crates/skyroads-renderer-ref`](/Users/ammaar/Development/skyroads/crates/skyroads-renderer-ref): a CPU-first reference renderer that now composes original intro/menu/help/settings art, all shipped world backdrops, dashboard assets, car art, and game-over overlays into a native `320x200` framebuffer
-- [`crates/skyroads-audio-ref`](/Users/ammaar/Development/skyroads/crates/skyroads-audio-ref): a reference audio path that plays `INTRO.SND`, parses `MUZAX`, schedules deterministic music events, and mixes native PCM plus `SFX.SND` playback at `48 kHz`
-- [`crates/skyroads-sdl`](/Users/ammaar/Development/skyroads/crates/skyroads-sdl): a zero-dependency SDL host that now acts as a thin macOS platform shell around the attract-mode app, reference renderer, and reference audio mixer
+- [`crates/skyroads-renderer-ref`](../crates/skyroads-renderer-ref): a CPU-first reference renderer that composes original intro/menu/help/settings art, shipped world backdrops, dashboard assets, car art, and game-over overlays into an indexed `320x200` framebuffer
+- [`crates/skyroads-audio-ref`](../crates/skyroads-audio-ref): a reference audio path that plays `INTRO.SND`, parses `MUZAX`, schedules deterministic music events, and mixes native PCM plus `SFX.SND` playback at `48 kHz`
+- [`crates/skyroads-sdl`](../crates/skyroads-sdl): a thin cross-platform SDL host around the attract-mode app, reference renderer, and reference audio mixer
 - asset-backed Rust tests that assert the current shipped roads, demo, TREKDAT, MUZAX, EXE runtime tables, and gameplay/session expectations still match the verified DOS-derived numbers
 
 Usage:
@@ -264,7 +272,16 @@ Current native-playable status:
 
 - `cargo run -p skyroads-sdl -- .` now launches a native build that starts in the intro flow, reaches the original menu path, supports live gameplay from `Start`, and still transitions into recorded demo playback on idle
 - the default SDL path no longer uses the old top-down debug view
-- the native gameplay path already uses original world/dashboard/car/game-over assets and native music/SFX playback, but the remaining large fidelity gap is the gameplay/demo road renderer: the current forward scene is asset-backed and uses real level/session state, not the final DOS-exact TREKDAT span renderer
+- the normal gameplay path now uses the DOS-derived TREKDAT span renderer and
+  indexed VGA palette; exact oracle fixtures cover five Road 0 movement states,
+  dispatch kinds `0..5`, shadow variants `0..4`, fallen/explosion/resource
+  terminal states, delayed game over, and the final tunnel exit
+- the `0x32A5` ship-mask routine is ported, including its screen bounds,
+  boundary-side selection, lift split, explosion sentinel, and 956-byte clear
+  quirk; the old visible-road-span clipping heuristic has been removed
+- gameplay palettes concatenate the selected road plus the exact CARS,
+  DASHBRD, and WORLD source banks. Live DAC captures prove two independent
+  road/world combinations and tests verify every shipped road/world mapping
 - the core/render boundary no longer exports guessed ship pose fields; it now passes exact ship simulation/control inputs into the renderer so DOS-specific pose and placement can be derived inside the renderer or from DOS oracle captures
 - static disassembly of the live gameplay caller at `0x0E0E` now shows that DOS passes `current_row` to the renderer in eighth-tile units, not whole-tile units; the native core has been corrected to use the same scaled row counter for `>> 3` group selection and `& 7` TREKDAT slot selection
 
@@ -290,14 +307,13 @@ Current native-playable status:
 
 ## Immediate Next Reverse-Engineering Targets
 
-- Finish mapping the `13 x 24` `TREKDAT` pointer-grid axes to exact on-screen primitives now that the native attract-mode host can exercise the real gameplay state and reference renderer live.
-- Determine which road tile values map to the six active draw routines and what the remaining `6..15` no-op dispatch slots represent in shipped levels.
-- Replace the current interim forward demo/gameplay scene with a software-reference renderer path that matches DOS ordering, composition, and palette behavior exactly.
+- Broaden the completed gameplay renderer contract with full-road traces and
+  live captures where the ship-mask boundary half-width table is nonzero.
+- Capture frame-accurate intro, menu, and full demo sequences through the same
+  indexed framebuffer and palette oracle.
 - Interpret `MUZAX` command semantics beyond the structural 2-byte command format and tie them back to exact OPL behavior.
 - Characterize the non-image metadata between some `ANIM.LZS` frames so animation pacing is reproduced exactly.
 - Use `DEMO.REC` as a deterministic equivalence fixture against the DOS executable and confirm that the DOS indexing/cadence matches the current interpretation exactly.
-- Confirm the exact draw order and composition rules for the extracted HUD `*.DAT` fragments inside the live DOS dashboard code path.
-- Run the DOS executable in a controlled emulator and record frame-by-frame behavior for one known demo path; startup tracing now works, but frame-accurate control/debugger scripting still needs a reliable harness in this environment.
 
 ## Useful External References
 

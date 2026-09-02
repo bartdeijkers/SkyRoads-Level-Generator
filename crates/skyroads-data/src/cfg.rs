@@ -106,7 +106,7 @@ pub fn load_cfg_bytes(data: &[u8]) -> Result<SkyroadsCfg> {
     let control_mode = ControlMode::from_dos_value(read_u16(data, 2)?);
     let sound_enabled = read_u16(data, 4)? != SKYROADS_CFG_SOUND_OFF;
     let completion_bytes = &data[6..];
-    if completion_bytes.len() % 2 != 0 {
+    if !completion_bytes.len().is_multiple_of(2) {
         return Err(Error::invalid_format(
             "SKYROADS.CFG completion table is not word-aligned",
         ));
@@ -120,8 +120,12 @@ pub fn load_cfg_bytes(data: &[u8]) -> Result<SkyroadsCfg> {
     }
 
     let mut completion_counts = [0u16; SKYROADS_CFG_COMPLETION_COUNT];
-    for index in 0..completion_word_count {
-        completion_counts[index] = read_u16(completion_bytes, index * 2)?;
+    for (index, count) in completion_counts
+        .iter_mut()
+        .take(completion_word_count)
+        .enumerate()
+    {
+        *count = read_u16(completion_bytes, index * 2)?;
     }
 
     Ok(SkyroadsCfg {
@@ -217,10 +221,13 @@ mod tests {
     fn save_cfg_path_writes_round_trippable_cfg_file() {
         let temp_dir = unique_temp_dir("save-cfg");
         let cfg_path = temp_dir.join("SKYROADS.CFG");
-        let mut cfg = SkyroadsCfg::default();
-        cfg.control_mode = ControlMode::Mouse;
-        cfg.sound_enabled = false;
-        cfg.completion_counts[5] = 9;
+        let mut completion_counts = [0; SKYROADS_CFG_COMPLETION_COUNT];
+        completion_counts[5] = 9;
+        let cfg = SkyroadsCfg {
+            control_mode: ControlMode::Mouse,
+            sound_enabled: false,
+            completion_counts,
+        };
 
         save_cfg_path(&cfg_path, &cfg).unwrap();
         let loaded = load_cfg_path(&cfg_path).unwrap();

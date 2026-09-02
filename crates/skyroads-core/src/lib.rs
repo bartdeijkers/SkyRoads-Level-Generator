@@ -1,4 +1,5 @@
 mod app;
+mod display;
 mod gameplay;
 
 use skyroads_data::{
@@ -7,11 +8,12 @@ use skyroads_data::{
 };
 
 pub use app::{
-    AppInput, AppMode, AppTickResult, AttractModeApp, AudioCommand, DemoPlaybackState, DisplayMode,
-    DisplaySettings, GoMenuScene, GoMenuSelection, HelpMenuScene, IntroSequenceState,
-    MainMenuScene, MenuCursor, RenderScene, RoadRenderRow, SettingsMenuCursor, SettingsMenuScene,
-    ShipRenderState,
+    AppInput, AppMode, AppTickResult, AttractModeApp, AudioCommand, DashboardRenderState,
+    DemoPlaybackState, GameplayRenderContext, GoMenuScene, GoMenuSelection, HelpMenuScene,
+    IntroSequenceState, MainMenuScene, MenuCursor, RenderScene, RoadRenderRow, SettingsMenuCursor,
+    SettingsMenuScene, ShipRenderState,
 };
+pub use display::{DisplayMode, DisplayModeCatalog, DisplaySettings, VideoMode};
 pub use gameplay::{
     controller_state_from_demo_input, controller_state_from_dos_joystick,
     controller_state_from_dos_mouse, sample_demo_input_for_ship, ControllerState, GameSnapshot,
@@ -71,10 +73,7 @@ pub fn demo_cursor(z_position_fp16: u32) -> DemoCursor {
     }
 }
 
-pub fn sample_demo_input<'a>(
-    demo: &'a DemoRecording,
-    z_position_fp16: u32,
-) -> Option<&'a DemoInput> {
+pub fn sample_demo_input(demo: &DemoRecording, z_position_fp16: u32) -> Option<&DemoInput> {
     demo.entries.get(demo_index_for_z_position(z_position_fp16))
 }
 

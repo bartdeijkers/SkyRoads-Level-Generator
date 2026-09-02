@@ -2,7 +2,7 @@
 
 This repository is an active reverse-engineering and native-port effort for the original DOS game **SkyRoads**.
 
-The goal is not to make a loose remake. The goal is a **true, deterministic port** that reproduces the shipped DOS build's data formats, simulation, rendering rules, demo playback, and audio timing as closely as possible, then runs that logic natively on macOS and other modern platforms.
+The goal is not to make a loose remake. The goal is a **true, deterministic port** that reproduces the shipped DOS build's data formats, simulation, rendering rules, demo playback, and audio timing as closely as possible, then runs that logic natively on Windows, Linux/WSL, macOS, and other modern platforms.
 
 ## Why This Is Not "Just DOSBox"
 
@@ -18,7 +18,7 @@ This project is doing something deeper:
 
 That matters because it unlocks things emulation alone does not:
 
-- native ports for macOS and other platforms
+- native ports for Windows, Linux/WSL, macOS, and other platforms
 - deterministic tests and regression fixtures
 - renderer and gameplay validation against the original binary
 - better tooling for modding and inspection
@@ -40,10 +40,17 @@ Current native build status:
 
 What is still incomplete:
 
-- the road renderer is much closer now, but it is still being replaced with the exact DOS `TREKDAT` span pipeline
-- some ship/foreground clipping and tunnel composition are still being ported from the DOS draw helpers
-- some collision/death/audio edge cases are still being tightened against DOS traces
-- full frame-accurate and audio-accurate equivalence against the DOS binary is still in progress
+- the gameplay renderer now has DOS-exact fixtures for all six road dispatch
+  kinds, all five shadow variants, terminal states, explosion progression,
+  delayed game over, and the final tunnel exit, but equivalent coverage is not
+  yet complete for every frame of every road
+- the exact ship-mask routine is ported and its boundary branches are covered,
+  while additional live obstruction captures would still broaden the oracle set
+- some collision/death edge cases are still being tightened against DOS traces
+- MUZAX now drives a real register-level OPL2 core at the recovered DOS timer
+  rate, with exact instrument, volume, note, and rhythm register semantics;
+  broader full-song audio-oracle comparisons and full-game frame traces remain
+  in progress
 
 In short: this is already past "concept demo" territory, but it is not honest to call it finished or pixel-perfect yet.
 
@@ -84,7 +91,7 @@ The Rust workspace now contains:
 - `skyroads-core`: deterministic gameplay, demo playback, and app state
 - `skyroads-renderer-ref`: CPU reference renderer under active DOS-faithful porting
 - `skyroads-audio-ref`: native audio path for intro/sample/music scheduling
-- `skyroads-sdl`: macOS-first native host
+- `skyroads-sdl`: cross-platform SDL2 host for Windows and Linux/WSL
 - `skyroads-cli`: verification and inspection commands
 
 ## Repository Layout
@@ -106,7 +113,7 @@ The Rust workspace now contains:
 Requirements:
 
 - Rust toolchain
-- SDL2 available on your system
+- SDL2 2.0.18 or newer available on your system
 - the bundled SkyRoads DOS data files in this repo, or another equivalent data directory
 
 For the native Rust app and CLI, `SKYROADS.EXE` is no longer required at runtime.
@@ -123,8 +130,9 @@ cargo run -p skyroads-cli -- render-capture . /tmp/skyroads-render-capture --x26
 cargo run -p skyroads-cli -- render-demo . /tmp/skyroads-render-demo --x265-video /tmp/skyroads-render-demo.mp4
 cargo run -p skyroads-cli -- render-compare /tmp/skyroads-render-capture /tmp/skyroads-render-capture
 cargo run -p skyroads-sdl -- .
+cargo run -p skyroads-sdl -- --windowed .
 cargo run -p skyroads-sdl -- --fullscreen .
-cargo run -p skyroads-sdl -- --borderless .
+cargo run -p skyroads-sdl -- --exclusive-fullscreen .
 cargo run -p skyroads-sdl -- --smoke-gameplay .
 ```
 
@@ -138,8 +146,12 @@ Notes:
 - `cargo run -p skyroads-cli -- render-compare BEFORE AFTER` compares two capture manifests by labeled frame hash
 - if SDL2 lives outside standard search paths, set `SDL2_CONFIG` or `SDL2_LIBS` before building `skyroads-sdl`
 - the optional x265 export path expects `ffmpeg` with `libx265` support on your `PATH`
-- `--fullscreen` uses desktop fullscreen with the `1280x960` presentation letterboxed to the largest 4:3 area
-- `--borderless` uses a centered borderless `1280x960` window
+- normal launches default to borderless desktop fullscreen at the screen's current resolution and refresh rate; `--fullscreen` and `--borderless` remain aliases for that mode
+- `--exclusive-fullscreen` prefers the desktop resolution at its highest reported refresh rate, then falls back to a suitable hardware-reported mode
+- `--windowed` uses a centered `1280x960` window
+- the in-game `DISPLAY` and `VIDEO MODE` choices switch between windowed, borderless desktop, and exact hardware-reported resolution/refresh tuples such as `3840X2160 144HZ`
+- the last successfully applied in-game display setting is restored from `SKYROADS-RS-DISPLAY.CFG`; command-line display flags are one-run overrides
+- the deterministic game simulation remains at `70 Hz`; the selected display refresh rate and vsync control presentation, not gameplay speed
 
 If you want to run against a different local SkyRoads data directory, you can pass that path instead of `.`.
 
@@ -148,7 +160,7 @@ If you want to run against a different local SkyRoads data directory, you can pa
 If WSLg input/audio is flaky, split testing into two layers:
 
 - portable gameplay/data validation: `cargo test` and `cargo run -p skyroads-cli -- demo-sim . 120`
-- SDL host smoke test without a visible window: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy cargo run -p skyroads-sdl -- --smoke-gameplay .`
+- SDL host smoke test without a visible window: `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy cargo run -p skyroads-sdl -- --smoke-gameplay .` (smoke mode defaults to windowed so dummy drivers do not need fullscreen support)
 
 The smoke test drives the native SDL host through intro -> menu -> gameplay automatically, holds throttle for a few gameplay ticks, prints a final gameplay summary, and exits non-zero if it never reaches gameplay.
 
@@ -165,7 +177,7 @@ SDL controls:
 - `Up / Down`: menu navigation, settings menu, keyboard throttle/brake
 - `Left / Right`: steer, settings menu
 - `Enter`: select, restart
-- `Shift+Enter`: toggle fullscreen on/off
+- `Shift+Enter`: toggle windowed/the most recently used fullscreen mode
 - `Space`: skip intro, jump, restart
 - `Escape`: back to menu
 - `Q`: quit
@@ -175,8 +187,10 @@ The `Controls` menu now follows the recovered DOS structure:
 
 - top row selects `keyboard`, `joystick`, or `mouse` control mode
 - bottom row toggles `sound effects` and `music`
-- native extension row toggles `fullscreen` and `borderless`
+- the native extension row selects `DISPLAY` (`WINDOWED`, `BORDERLESS`, or `EXCLUSIVE`) and an exact SDL-reported `VIDEO MODE`
 - the menu art is composed from `SETMENU` base frame `0`, white cursor overlays `1..5`, and orange selected-state overlays `6..10`
+
+SDL only offers modes exposed by the active platform display driver. Native Windows can therefore expose a physical `3840x2160 @ 144 Hz` mode while WSLg may expose the same desktop at roughly `60 Hz`; the game never invents a mode the driver did not report.
 
 When `mouse` control mode is selected in that menu, the SDL host follows the recovered DOS thresholds:
 

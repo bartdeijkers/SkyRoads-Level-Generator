@@ -3,7 +3,10 @@ use skyroads_data::{
     SKYROADS_CFG_COMPLETION_COUNT,
 };
 
-use crate::{sample_demo_input_for_ship, ControllerState, GameplayEvent, GameplaySession};
+use crate::{
+    sample_demo_input_for_ship, ControllerState, DisplayMode, DisplayModeCatalog, DisplaySettings,
+    GameplayEvent, GameplaySession, VideoMode,
+};
 
 const TICKS_PER_SECOND: usize = 70;
 const INTRO_SOUND_DELAY_TICKS: usize = TICKS_PER_SECOND / 2;
@@ -14,8 +17,9 @@ const MENU_IDLE_DEMO_TICKS: usize = TICKS_PER_SECOND * 5;
 const RENDER_ROWS_BEHIND: usize = 3;
 const RENDER_ROWS_AHEAD: usize = 7;
 const MENU_SONG_INDEX: u8 = 1;
-const GAMEPLAY_SONG_INDEX: u8 = 2;
-const DEMO_SONG_INDEX: u8 = 2;
+const FIRST_ROAD_SONG_INDEX: u8 = 2;
+const ROAD_SONG_COUNT: u8 = 12;
+const DEFAULT_MUSIC_RANDOM_SEED: u32 = 0x534B_5952;
 const DEMO_LEVEL_INDEX: usize = 0;
 const FIRST_PLAYABLE_LEVEL_INDEX: usize = 1;
 const GO_MENU_ROADS_PER_WORLD: usize = 3;
@@ -40,6 +44,36 @@ pub enum MenuCursor {
     Start,
     Config,
     Help,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RoadSongSelector {
+    random_state: u32,
+    previous_song_offset: Option<u8>,
+}
+
+impl RoadSongSelector {
+    fn new(seed: u32) -> Self {
+        Self {
+            random_state: seed.max(1),
+            previous_song_offset: None,
+        }
+    }
+
+    fn next_song(&mut self) -> u8 {
+        let mut state = self.random_state;
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        self.random_state = state;
+
+        let mut song_offset = (state % u32::from(ROAD_SONG_COUNT)) as u8;
+        if self.previous_song_offset == Some(song_offset) {
+            song_offset = (song_offset + 1) % ROAD_SONG_COUNT;
+        }
+        self.previous_song_offset = Some(song_offset);
+        FIRST_ROAD_SONG_INDEX + song_offset
+    }
 }
 
 impl MenuCursor {
@@ -149,32 +183,6 @@ impl Default for GoMenuSelection {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DisplayMode {
-    #[default]
-    Windowed,
-    Borderless,
-    Fullscreen,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct DisplaySettings {
-    pub fullscreen: bool,
-    pub borderless: bool,
-}
-
-impl DisplaySettings {
-    pub fn active_mode(self) -> DisplayMode {
-        if self.fullscreen {
-            DisplayMode::Fullscreen
-        } else if self.borderless {
-            DisplayMode::Borderless
-        } else {
-            DisplayMode::Windowed
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsMenuCursor {
     Keyboard,
@@ -182,8 +190,8 @@ pub enum SettingsMenuCursor {
     Mouse,
     SoundFx,
     Music,
-    Fullscreen,
-    Borderless,
+    Display,
+    VideoMode,
 }
 
 impl SettingsMenuCursor {
@@ -194,7 +202,7 @@ impl SettingsMenuCursor {
             Self::Mouse => Some(3),
             Self::SoundFx => Some(4),
             Self::Music => Some(5),
-            Self::Fullscreen | Self::Borderless => None,
+            Self::Display | Self::VideoMode => None,
         }
     }
 
@@ -211,7 +219,7 @@ impl SettingsMenuCursor {
             Self::Keyboard => Some(ControlMode::Keyboard),
             Self::Joystick => Some(ControlMode::Joystick),
             Self::Mouse => Some(ControlMode::Mouse),
-            Self::SoundFx | Self::Music | Self::Fullscreen | Self::Borderless => None,
+            Self::SoundFx | Self::Music | Self::Display | Self::VideoMode => None,
         }
     }
 
@@ -222,8 +230,8 @@ impl SettingsMenuCursor {
             Self::Mouse => 250,
             Self::SoundFx => 120,
             Self::Music => 208,
-            Self::Fullscreen => 120,
-            Self::Borderless => 208,
+            Self::Display => 120,
+            Self::VideoMode => 208,
         }
     }
 
@@ -231,7 +239,7 @@ impl SettingsMenuCursor {
         match self {
             Self::Keyboard | Self::Joystick | Self::Mouse => 0,
             Self::SoundFx | Self::Music => 1,
-            Self::Fullscreen | Self::Borderless => 2,
+            Self::Display | Self::VideoMode => 2,
         }
     }
 
@@ -239,7 +247,7 @@ impl SettingsMenuCursor {
         match row {
             0 => &[Self::Keyboard, Self::Joystick, Self::Mouse],
             1 => &[Self::SoundFx, Self::Music],
-            2 => &[Self::Fullscreen, Self::Borderless],
+            2 => &[Self::Display, Self::VideoMode],
             _ => &[],
         }
     }
@@ -373,8 +381,27 @@ pub struct RoadRenderRow {
     pub cells: [LevelCell; ROAD_COLUMNS],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DashboardRenderState {
+    pub z_velocity: f64,
+    pub speed_gauge_visible_count: usize,
+    pub lift_indicator_visible_count: usize,
+    pub oxygen_percent: f64,
+    pub fuel_percent: f64,
+    pub jump_o_master_in_use: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GameplayRenderContext {
+    /// Counter value used to build the framebuffer represented by this scene.
+    pub renderer_counter: usize,
+    pub active_trekdat_slot: usize,
+    pub ship_sprite_phase: usize,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DemoPlaybackState {
+    pub road_index: usize,
     pub world_index: usize,
     pub gravity: u16,
     pub level_length: usize,
@@ -386,6 +413,8 @@ pub struct DemoPlaybackState {
     pub is_demo: bool,
     pub craft_state: crate::ShipState,
     pub snapshot: crate::GameSnapshot,
+    pub dashboard: DashboardRenderState,
+    pub render_context: GameplayRenderContext,
     pub ship: ShipRenderState,
 }
 
@@ -410,6 +439,7 @@ pub struct SettingsMenuScene {
     pub cursor: SettingsMenuCursor,
     pub control_mode: ControlMode,
     pub display_settings: DisplaySettings,
+    pub selected_video_mode: Option<VideoMode>,
     pub sound_fx_enabled: bool,
     pub music_enabled: bool,
 }
@@ -453,9 +483,13 @@ pub struct AttractModeApp {
     menu_song_started: bool,
     control_mode: ControlMode,
     settings_cursor: SettingsMenuCursor,
+    display_mode_catalog: DisplayModeCatalog,
     display_settings: DisplaySettings,
+    last_fullscreen_settings: DisplaySettings,
+    selected_video_mode: Option<VideoMode>,
     sound_fx_enabled: bool,
     music_enabled: bool,
+    road_song_selector: RoadSongSelector,
 }
 
 impl AttractModeApp {
@@ -491,9 +525,13 @@ impl AttractModeApp {
             menu_song_started: false,
             control_mode: ControlMode::Keyboard,
             settings_cursor: SettingsMenuCursor::Keyboard,
+            display_mode_catalog: DisplayModeCatalog::default(),
             display_settings: DisplaySettings::default(),
+            last_fullscreen_settings: DisplaySettings::BorderlessDesktop,
+            selected_video_mode: None,
             sound_fx_enabled: true,
             music_enabled: true,
+            road_song_selector: RoadSongSelector::new(DEFAULT_MUSIC_RANDOM_SEED),
         }
     }
 
@@ -509,8 +547,106 @@ impl AttractModeApp {
         self.display_settings
     }
 
-    pub fn set_display_settings(&mut self, settings: DisplaySettings) {
+    pub fn display_mode_catalog(&self) -> &DisplayModeCatalog {
+        &self.display_mode_catalog
+    }
+
+    pub fn selected_video_mode(&self) -> Option<VideoMode> {
+        self.selected_video_mode
+    }
+
+    pub fn set_music_random_seed(&mut self, seed: u32) {
+        self.road_song_selector = RoadSongSelector::new(seed);
+    }
+
+    pub fn render_scene(&self) -> RenderScene {
+        self.current_render_scene()
+    }
+
+    pub fn configure_display_modes(&mut self, catalog: DisplayModeCatalog) {
+        let active_video_mode = self.display_settings.video_mode();
+        let preferred_video_mode = active_video_mode.or(self.selected_video_mode);
+
+        self.display_mode_catalog = catalog;
+        self.selected_video_mode = preferred_video_mode
+            .filter(|mode| self.display_mode_catalog.contains(*mode))
+            .or_else(|| self.display_mode_catalog.recommended_mode());
+
+        let active_mode_is_available =
+            active_video_mode.is_some_and(|mode| self.display_mode_catalog.contains(mode));
+        if self.display_settings.mode() == DisplayMode::ExclusiveFullscreen
+            && !active_mode_is_available
+        {
+            self.display_settings = DisplaySettings::BorderlessDesktop;
+        }
+        if self.last_fullscreen_settings.mode() == DisplayMode::ExclusiveFullscreen
+            && !self
+                .last_fullscreen_settings
+                .video_mode()
+                .is_some_and(|mode| self.display_mode_catalog.contains(mode))
+        {
+            self.last_fullscreen_settings = DisplaySettings::BorderlessDesktop;
+        }
+    }
+
+    pub fn set_display_settings(&mut self, settings: DisplaySettings) -> bool {
+        if let DisplaySettings::ExclusiveFullscreen(mode) = settings {
+            if !self.display_mode_catalog.contains(mode) {
+                return false;
+            }
+            self.selected_video_mode = Some(mode);
+        }
+
         self.display_settings = settings;
+        if settings != DisplaySettings::Windowed {
+            self.last_fullscreen_settings = settings;
+        }
+        true
+    }
+
+    pub fn set_selected_video_mode(&mut self, mode: VideoMode) -> bool {
+        if !self.display_mode_catalog.contains(mode) {
+            return false;
+        }
+
+        self.selected_video_mode = Some(mode);
+        if self.display_settings.mode() == DisplayMode::ExclusiveFullscreen {
+            self.display_settings = DisplaySettings::ExclusiveFullscreen(mode);
+            self.last_fullscreen_settings = self.display_settings;
+        }
+        true
+    }
+
+    pub fn toggle_fullscreen(&mut self) {
+        let next_settings = match self.display_settings {
+            DisplaySettings::Windowed => self.last_fullscreen_settings,
+            fullscreen_settings => {
+                self.last_fullscreen_settings = fullscreen_settings;
+                DisplaySettings::Windowed
+            }
+        };
+        let _ = self.set_display_settings(next_settings);
+    }
+
+    pub fn cycle_display_mode(&mut self) {
+        let next_settings = match self.display_settings {
+            DisplaySettings::Windowed => DisplaySettings::BorderlessDesktop,
+            DisplaySettings::BorderlessDesktop => match self.selected_video_mode {
+                Some(mode) => DisplaySettings::ExclusiveFullscreen(mode),
+                None => DisplaySettings::Windowed,
+            },
+            DisplaySettings::ExclusiveFullscreen(_) => DisplaySettings::Windowed,
+        };
+        let _ = self.set_display_settings(next_settings);
+    }
+
+    pub fn cycle_video_mode(&mut self) {
+        let next_mode = self
+            .display_mode_catalog
+            .next_mode(self.selected_video_mode);
+        if let Some(next_mode) = next_mode {
+            let _ = self.set_selected_video_mode(next_mode);
+        }
     }
 
     pub fn apply_cfg(&mut self, cfg: &SkyroadsCfg) {
@@ -746,7 +882,7 @@ impl AttractModeApp {
         self.menu_idle_tick = 0;
         self.demo_session = GameplaySession::new(self.levels[self.demo_level_index].clone());
         self.menu_song_started = false;
-        audio_commands.push(AudioCommand::PlaySong(DEMO_SONG_INDEX));
+        audio_commands.push(AudioCommand::PlaySong(self.road_song_selector.next_song()));
     }
 
     fn start_gameplay(&mut self, audio_commands: &mut Vec<AudioCommand>) {
@@ -756,7 +892,7 @@ impl AttractModeApp {
         self.gameplay_session = GameplaySession::new(self.levels[self.current_level_index].clone());
         self.gameplay_win_recorded = false;
         self.menu_song_started = false;
-        audio_commands.push(AudioCommand::PlaySong(GAMEPLAY_SONG_INDEX));
+        audio_commands.push(AudioCommand::PlaySong(self.road_song_selector.next_song()));
     }
 
     fn enter_main_menu(&mut self, audio_commands: &mut Vec<AudioCommand>) {
@@ -805,6 +941,7 @@ impl AttractModeApp {
                 cursor: self.settings_cursor,
                 control_mode: self.control_mode,
                 display_settings: self.display_settings,
+                selected_video_mode: self.selected_video_mode,
                 sound_fx_enabled: self.sound_fx_enabled,
                 music_enabled: self.music_enabled,
             }),
@@ -842,12 +979,8 @@ impl AttractModeApp {
                     audio_commands.push(AudioCommand::StopSong);
                 }
             }
-            SettingsMenuCursor::Fullscreen => {
-                self.display_settings.fullscreen = !self.display_settings.fullscreen;
-            }
-            SettingsMenuCursor::Borderless => {
-                self.display_settings.borderless = !self.display_settings.borderless;
-            }
+            SettingsMenuCursor::Display => self.cycle_display_mode(),
+            SettingsMenuCursor::VideoMode => self.cycle_video_mode(),
             SettingsMenuCursor::Keyboard
             | SettingsMenuCursor::Joystick
             | SettingsMenuCursor::Mouse => {}
@@ -932,6 +1065,7 @@ impl AttractModeApp {
             .collect::<Vec<_>>();
 
         DemoPlaybackState {
+            road_index: session.level.road_index,
             world_index: world_index_for_level(session.level.road_index),
             gravity: session.level.gravity,
             level_length: session.level.length(),
@@ -953,6 +1087,24 @@ impl AttractModeApp {
                 jump_o_master_in_use: session.ship.jump_o_master_in_use,
                 jump_o_master_velocity_delta: session.ship.jump_o_master_velocity_delta,
             },
+            dashboard: DashboardRenderState {
+                z_velocity: session.previous_ship.z_velocity
+                    + session.previous_ship.jump_o_master_velocity_delta,
+                speed_gauge_visible_count: speed_gauge_visible_count(
+                    session.previous_ship.z_velocity
+                        + session.previous_ship.jump_o_master_velocity_delta,
+                ),
+                lift_indicator_visible_count: session
+                    .previous_ship
+                    .y_velocity
+                    .max(0.0)
+                    .ceil()
+                    .min(29.0) as usize,
+                oxygen_percent: session.previous_ship.oxygen_remaining / 0x7530 as f64,
+                fuel_percent: session.previous_ship.fuel_remaining / 0x7530 as f64,
+                jump_o_master_in_use: session.previous_ship.jump_o_master_in_use,
+            },
+            render_context: gameplay_render_context(session.frame_index(), current_row),
             ship: build_ship_render_state(session),
         }
     }
@@ -1025,6 +1177,24 @@ fn build_ship_render_state(session: &GameplaySession) -> ShipRenderState {
     }
 }
 
+fn gameplay_render_context(frame_index: usize, current_row: usize) -> GameplayRenderContext {
+    let renderer_counter = frame_index.saturating_sub(1);
+    let phase_cycle_index = (renderer_counter / 2) & 0x03;
+    let ship_sprite_phase = [0, 1, 2, 1][phase_cycle_index];
+
+    GameplayRenderContext {
+        renderer_counter,
+        active_trekdat_slot: current_row & 7,
+        ship_sprite_phase,
+    }
+}
+
+fn speed_gauge_visible_count(z_velocity: f64) -> usize {
+    let maximum_velocity = 0x2AAA as f64 / 0x10000 as f64;
+    let normalized_velocity = (z_velocity / maximum_velocity).clamp(0.0, 1.0);
+    (normalized_velocity * 34.0).floor() as usize
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -1035,9 +1205,9 @@ mod tests {
     };
 
     use super::{
-        AppInput, AppMode, AttractModeApp, AudioCommand, ControlMode, DisplaySettings,
-        GoMenuSelection, MenuCursor, RenderScene, SettingsMenuCursor, GAMEPLAY_SONG_INDEX,
-        RENDER_ROWS_BEHIND,
+        AppInput, AppMode, AttractModeApp, AudioCommand, ControlMode, DisplayModeCatalog,
+        DisplaySettings, GoMenuSelection, MenuCursor, RenderScene, RoadSongSelector,
+        SettingsMenuCursor, VideoMode, FIRST_ROAD_SONG_INDEX, RENDER_ROWS_BEHIND, ROAD_SONG_COUNT,
     };
 
     fn repo_root() -> PathBuf {
@@ -1053,6 +1223,10 @@ mod tests {
             .map(level_from_road_entry)
             .collect::<Vec<_>>();
         AttractModeApp::new(levels, demo)
+    }
+
+    fn video_mode(width: u32, height: u32, refresh_hz: u32) -> VideoMode {
+        VideoMode::new(width, height, Some(refresh_hz)).unwrap()
     }
 
     fn skip_intro_to_main_menu(app: &mut AttractModeApp) {
@@ -1087,6 +1261,25 @@ mod tests {
         assert_eq!(tick.mode, AppMode::Intro);
         assert_eq!(tick.audio_commands, vec![AudioCommand::PlaySong(0)]);
         assert!(matches!(tick.render_scene, RenderScene::Intro(_)));
+    }
+
+    #[test]
+    fn road_song_selector_covers_all_tracks_without_immediate_repeats() {
+        let mut selector = RoadSongSelector::new(1);
+        let mut seen = [false; ROAD_SONG_COUNT as usize];
+        let mut previous = None;
+
+        for _ in 0..256 {
+            let song = selector.next_song();
+            assert!(
+                (FIRST_ROAD_SONG_INDEX..FIRST_ROAD_SONG_INDEX + ROAD_SONG_COUNT).contains(&song)
+            );
+            assert_ne!(previous, Some(song));
+            seen[usize::from(song - FIRST_ROAD_SONG_INDEX)] = true;
+            previous = Some(song);
+        }
+
+        assert!(seen.into_iter().all(|was_selected| was_selected));
     }
 
     #[test]
@@ -1207,10 +1400,9 @@ mod tests {
     #[test]
     fn settings_menu_reflects_current_runtime_settings() {
         let mut app = make_app();
-        app.set_display_settings(DisplaySettings {
-            fullscreen: true,
-            borderless: false,
-        });
+        let four_k_144 = video_mode(3840, 2160, 144);
+        app.configure_display_modes(DisplayModeCatalog::new(four_k_144, [four_k_144]));
+        assert!(app.set_display_settings(DisplaySettings::ExclusiveFullscreen(four_k_144)));
         skip_intro_to_main_menu(&mut app);
         app.tick(AppInput {
             down: true,
@@ -1226,11 +1418,9 @@ mod tests {
                 assert_eq!(scene.control_mode, ControlMode::Keyboard);
                 assert_eq!(
                     scene.display_settings,
-                    DisplaySettings {
-                        fullscreen: true,
-                        borderless: false,
-                    }
+                    DisplaySettings::ExclusiveFullscreen(four_k_144)
                 );
+                assert_eq!(scene.selected_video_mode, Some(four_k_144));
                 assert!(scene.sound_fx_enabled);
                 assert!(scene.music_enabled);
             }
@@ -1287,8 +1477,7 @@ mod tests {
         match music_toggle.render_scene {
             RenderScene::SettingsMenu(scene) => {
                 assert_eq!(scene.cursor, SettingsMenuCursor::Music);
-                assert!(!scene.display_settings.fullscreen);
-                assert!(!scene.display_settings.borderless);
+                assert_eq!(scene.display_settings, DisplaySettings::BorderlessDesktop);
                 assert!(!scene.music_enabled);
                 assert!(scene.sound_fx_enabled);
             }
@@ -1321,8 +1510,7 @@ mod tests {
         match sound_toggle.render_scene {
             RenderScene::SettingsMenu(scene) => {
                 assert_eq!(scene.cursor, SettingsMenuCursor::SoundFx);
-                assert!(!scene.display_settings.fullscreen);
-                assert!(!scene.display_settings.borderless);
+                assert_eq!(scene.display_settings, DisplaySettings::BorderlessDesktop);
                 assert!(!scene.sound_fx_enabled);
                 assert!(scene.music_enabled);
             }
@@ -1331,8 +1519,15 @@ mod tests {
     }
 
     #[test]
-    fn settings_menu_can_toggle_fullscreen_and_borderless() {
+    fn settings_menu_cycles_display_and_exact_video_modes() {
         let mut app = make_app();
+        let full_hd_60 = video_mode(1920, 1080, 60);
+        let four_k_60 = video_mode(3840, 2160, 60);
+        let four_k_144 = video_mode(3840, 2160, 144);
+        app.configure_display_modes(DisplayModeCatalog::new(
+            four_k_60,
+            [full_hd_60, four_k_60, four_k_144],
+        ));
         skip_intro_to_main_menu(&mut app);
         app.tick(AppInput {
             down: true,
@@ -1347,50 +1542,83 @@ mod tests {
             ..AppInput::default()
         });
 
-        let fullscreen_toggle = app.tick(AppInput {
+        let exclusive = app.tick(AppInput {
             down: true,
             enter: true,
             ..AppInput::default()
         });
-        match fullscreen_toggle.render_scene {
+        match exclusive.render_scene {
             RenderScene::SettingsMenu(scene) => {
-                assert_eq!(scene.cursor, SettingsMenuCursor::Fullscreen);
+                assert_eq!(scene.cursor, SettingsMenuCursor::Display);
                 assert_eq!(
                     scene.display_settings,
-                    DisplaySettings {
-                        fullscreen: true,
-                        borderless: false,
-                    }
+                    DisplaySettings::ExclusiveFullscreen(four_k_144)
                 );
+                assert_eq!(scene.selected_video_mode, Some(four_k_144));
             }
             other => panic!("unexpected render scene: {other:?}"),
         }
 
-        let borderless_toggle = app.tick(AppInput {
+        let next_video_mode = app.tick(AppInput {
             right: true,
             enter: true,
             ..AppInput::default()
         });
-        match borderless_toggle.render_scene {
+        match next_video_mode.render_scene {
             RenderScene::SettingsMenu(scene) => {
-                assert_eq!(scene.cursor, SettingsMenuCursor::Borderless);
+                assert_eq!(scene.cursor, SettingsMenuCursor::VideoMode);
                 assert_eq!(
                     scene.display_settings,
-                    DisplaySettings {
-                        fullscreen: true,
-                        borderless: true,
-                    }
+                    DisplaySettings::ExclusiveFullscreen(full_hd_60)
                 );
+                assert_eq!(scene.selected_video_mode, Some(full_hd_60));
             }
             other => panic!("unexpected render scene: {other:?}"),
         }
         assert_eq!(
             app.display_settings(),
-            DisplaySettings {
-                fullscreen: true,
-                borderless: true,
-            }
+            DisplaySettings::ExclusiveFullscreen(full_hd_60)
         );
+    }
+
+    #[test]
+    fn display_mode_cycle_skips_exclusive_without_a_catalog() {
+        let mut app = make_app();
+
+        assert_eq!(app.display_settings(), DisplaySettings::BorderlessDesktop);
+        app.cycle_display_mode();
+        assert_eq!(app.display_settings(), DisplaySettings::Windowed);
+        app.cycle_display_mode();
+        assert_eq!(app.display_settings(), DisplaySettings::BorderlessDesktop);
+        assert_eq!(app.selected_video_mode(), None);
+    }
+
+    #[test]
+    fn fullscreen_toggle_restores_the_previous_exact_fullscreen_mode() {
+        let mut app = make_app();
+        let four_k_144 = video_mode(3840, 2160, 144);
+        app.configure_display_modes(DisplayModeCatalog::new(four_k_144, [four_k_144]));
+        assert!(app.set_display_settings(DisplaySettings::ExclusiveFullscreen(four_k_144)));
+
+        app.toggle_fullscreen();
+        assert_eq!(app.display_settings(), DisplaySettings::Windowed);
+        app.toggle_fullscreen();
+        assert_eq!(
+            app.display_settings(),
+            DisplaySettings::ExclusiveFullscreen(four_k_144)
+        );
+    }
+
+    #[test]
+    fn display_settings_reject_an_unreported_exclusive_mode() {
+        let mut app = make_app();
+        let available = video_mode(1920, 1080, 60);
+        let unavailable = video_mode(2560, 1440, 144);
+        app.configure_display_modes(DisplayModeCatalog::new(available, [available]));
+
+        assert!(!app.set_display_settings(DisplaySettings::ExclusiveFullscreen(unavailable)));
+        assert_eq!(app.display_settings(), DisplaySettings::BorderlessDesktop);
+        assert_eq!(app.selected_video_mode(), Some(available));
     }
 
     #[test]
@@ -1510,10 +1738,12 @@ mod tests {
         assert_eq!(gameplay.mode, AppMode::Gameplay);
         assert_eq!(app.current_level_index, 17);
         assert!(matches!(gameplay.render_scene, RenderScene::Gameplay(_)));
-        assert_eq!(
-            gameplay.audio_commands,
-            vec![AudioCommand::PlaySong(GAMEPLAY_SONG_INDEX)]
-        );
+        assert!(matches!(
+            gameplay.audio_commands.as_slice(),
+            [AudioCommand::PlaySong(song)]
+                if (FIRST_ROAD_SONG_INDEX..FIRST_ROAD_SONG_INDEX + ROAD_SONG_COUNT)
+                    .contains(song)
+        ));
 
         app.gameplay_session.did_win = true;
         app.tick(AppInput::default());
@@ -1534,9 +1764,11 @@ mod tests {
     #[test]
     fn cfg_snapshot_round_trips_control_mode_sound_and_progress() {
         let mut app = make_app();
-        let mut cfg = SkyroadsCfg::default();
-        cfg.control_mode = ControlMode::Mouse;
-        cfg.sound_enabled = false;
+        let mut cfg = SkyroadsCfg {
+            control_mode: ControlMode::Mouse,
+            sound_enabled: false,
+            ..SkyroadsCfg::default()
+        };
         cfg.completion_counts[4] = 3;
 
         app.apply_cfg(&cfg);

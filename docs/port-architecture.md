@@ -1,6 +1,6 @@
 # SkyRoads Port Architecture
 
-The target is not a "modern remake." The target is a deterministic reimplementation that reproduces the DOS build's behavior, then wraps that core in a platform layer for macOS and other hosts.
+The target is not a "modern remake." The target is a deterministic reimplementation that reproduces the DOS build's behavior, then wraps that core in a platform layer for Windows, Linux/WSL, macOS, and other hosts.
 
 ## Core Rule
 
@@ -13,7 +13,7 @@ The port must treat DOS behavior as the spec:
 - same demo playback results
 - same sound/music event timing
 
-The platform layer should be replaceable. The game core should not know whether it is running on DOS, macOS, or anything else.
+The platform layer should be replaceable. The game core should not know whether it is running on DOS, Windows, Linux/WSL, macOS, or anything else.
 
 ## Recommended Split
 
@@ -99,7 +99,7 @@ Requirements:
 Current local status:
 
 - [`crates/skyroads-sdl`](/Users/ammaar/Development/skyroads/crates/skyroads-sdl) is now the first native host
-- it opens a local SDL window on macOS, runs the attract-mode app at a fixed `70 Hz`, uploads the reference framebuffer, outputs native audio, supports live gameplay controls, and follows the intro -> menu -> gameplay/demo loop
+- it opens a cross-platform SDL window, runs the attract-mode app at a fixed `70 Hz`, uploads the reference framebuffer, outputs native audio, supports live gameplay controls, follows the intro -> menu -> gameplay/demo loop, defaults to borderless desktop fullscreen, persists the last applied native display setting separately from the DOS config, and refreshes exact SDL-reported exclusive resolution/refresh modes after monitor changes
 - this host is intentionally provisional: it now exercises original graphics and sound assets by default, but its road renderer is still not the final DOS-faithful TREKDAT span path
 
 ## Validation Harness
@@ -142,13 +142,23 @@ Current status:
 - the controls/settings flow is now driven by that recovered DOS structure: the native app tracks `keyboard` / `joystick` / `mouse`, sound-effects and music toggles, and the settings renderer composes `SETMENU` from its recovered base frame plus white/orange overlay fragments instead of treating it as a stack of full-screen pages
 - the live gameplay path now uses an eighth-tile `current_row` counter, recovered mouse thresholds/recentering, and recovered joystick thresholds, so the SDL host can exercise keyboard, joystick, and DOS-style mouse input through the same core/session path
 - the first native host layers now exist via [`crates/skyroads-renderer-ref`](/Users/ammaar/Development/skyroads/crates/skyroads-renderer-ref), [`crates/skyroads-audio-ref`](/Users/ammaar/Development/skyroads/crates/skyroads-audio-ref), and [`crates/skyroads-sdl`](/Users/ammaar/Development/skyroads/crates/skyroads-sdl), which together make the current port path playable with original art/audio assets and now include an SDL gameplay smoke-test path for WSL/headless validation
-- gameplay presentation is noticeably closer to the DOS build than the initial host, but the renderer is still carrying fallback logic for ship/camera/shadow placement until the exact DOS road/span and view-placement path is fully ported
-- the main missing layers are still the DOS-faithful TREKDAT road renderer, tighter MUZAX/OPL equivalence, and stronger frame/audio equivalence harnesses against the original executable
+- normal gameplay now renders through the DOS-derived TREKDAT span path and
+  indexed VGA palette; exact fixtures cover five Road 0 movement states, every
+  shipped dispatch kind, all five shadow variants, terminal and explosion
+  states, delayed game over, and the final tunnel exit
+- the renderer has no normal-path fallback road, placement, or road-span ship
+  clipping path. The recovered `0x32A5` ship-mask builder and explicit
+  renderer/dashboard context are shared by fixture and live rendering
+- MUZAX commands now reproduce the recovered DOS instrument, volume, note,
+  loop, and rhythm-register writes at the original PIT-derived timer rate and
+  feed a register-level YM3812 core; broader full-song audio traces and
+  full-game frame traces against the original executable remain to be captured
 
 ## Near-Term Milestones
 
-1. Finish road descriptor semantics for the six live renderer kinds.
-2. Map TREKDAT pointer-grid axes to exact on-screen primitive selection.
-3. Replace the current interim road scene with the DOS-faithful TREKDAT software renderer.
-4. Capture frame-accurate intro/menu/demo traces from DOSBox-X and compare them against the native session.
-5. Tighten reference audio scheduling until MUZAX playback matches the original event timing closely enough for equivalence tests.
+1. Expand the exact gameplay oracle set to more obstruction positions and longer
+   complete-road traces.
+2. Capture frame-accurate intro, menu, and demo sequences with the same
+   indexed-frame contract.
+3. Expand the exact MUZAX register oracle beyond the current focused command
+   cases into complete-loop traces for all fourteen songs.

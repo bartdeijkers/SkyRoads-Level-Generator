@@ -200,7 +200,7 @@ impl Ship {
                     if self.y_velocity < 0.0 {
                         events.push(GameplayEvent::ShipBounced);
                     }
-                    self.y_velocity = -0.5 * self.y_velocity;
+                    self.y_velocity *= -0.5;
                 } else {
                     self.y_velocity = 0.0;
                 }
@@ -617,6 +617,12 @@ impl Ship {
     }
 }
 
+impl Default for Ship {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GameSnapshot {
     pub x_position: f64,
@@ -645,6 +651,7 @@ pub struct GameplaySession {
     pub level: Level,
     pub ship: Ship,
     pub expected_ship: Ship,
+    pub(crate) previous_ship: Ship,
     pub did_win: bool,
     pub(crate) last_controls: ControllerState,
     pub(crate) explosion_timer: usize,
@@ -659,6 +666,7 @@ impl GameplaySession {
             level,
             ship,
             expected_ship: ship,
+            previous_ship: ship,
             did_win: false,
             last_controls: ControllerState::NEUTRAL,
             explosion_timer: 0,
@@ -691,6 +699,7 @@ impl GameplaySession {
     }
 
     pub fn run_frame(&mut self, controls: ControllerState) -> GameplayFrameResult {
+        self.previous_ship = self.ship;
         self.last_controls = controls;
         let previous_state = self.ship.state;
         let events = self.ship.update(
@@ -749,10 +758,7 @@ impl GameplaySession {
     }
 }
 
-pub fn sample_demo_input_for_ship<'a>(
-    demo: &'a DemoRecording,
-    ship: Ship,
-) -> Option<&'a DemoInput> {
+pub fn sample_demo_input_for_ship(demo: &DemoRecording, ship: Ship) -> Option<&DemoInput> {
     demo.entries
         .get((ship.z_position * (0x10000 as f64 / 0x0666 as f64)).floor() as usize)
 }
@@ -941,6 +947,22 @@ mod tests {
         assert!(frame2.snapshot.z_position > frame1.snapshot.z_position);
         assert!(frame2.snapshot.fuel_percent < frame1.snapshot.fuel_percent);
         assert_eq!(frame2.snapshot.craft_state, ShipState::Alive);
+    }
+
+    #[test]
+    fn final_road1_tunnel_row_latches_the_win() {
+        let roads = load_roads_lzs_path(repo_root().join("ROADS.LZS")).unwrap();
+        let level = level_from_road_entry(&roads.roads[1]);
+        let win_position = level.length() as f64 - 0.5;
+        let mut session = GameplaySession::new(level);
+        session.ship.z_position = win_position;
+        session.ship.z_velocity = 0.0;
+        sync_expected_ship(&mut session);
+
+        let frame = session.run_frame(ControllerState::NEUTRAL);
+
+        assert!(frame.did_win);
+        assert!(session.did_win);
     }
 
     #[test]

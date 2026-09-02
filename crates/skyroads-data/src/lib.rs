@@ -7,6 +7,7 @@ mod exe;
 mod image;
 mod level;
 mod muzax;
+mod palette;
 mod roads;
 mod shipped_runtime_tables;
 mod sound;
@@ -19,7 +20,9 @@ pub use cfg::{
 pub use compression::decompress_stream;
 pub use dashboard::{
     load_dashboard_dat_bytes, load_dashboard_dat_path, HudFragment, HudFragmentPack,
-    DASHBOARD_COLORS,
+    DASHBOARD_COLORS, DOS_JUMP_MASTER_FRAME_PIXELS, DOS_JUMP_MASTER_HEIGHT, DOS_JUMP_MASTER_PIXELS,
+    DOS_JUMP_MASTER_WIDTH, DOS_NUMBER_FRAME_PIXELS, DOS_NUMBER_HEIGHT, DOS_NUMBER_PIXELS,
+    DOS_NUMBER_WIDTH,
 };
 pub use demo::{
     load_demo_rec_bytes, load_demo_rec_path, DemoInput, DemoRecording, JumpCounts,
@@ -44,6 +47,11 @@ pub use level::{
 pub use muzax::{
     load_muzax_lzs_bytes, load_muzax_lzs_path, MuzaxArchive, MuzaxCommandHead, MuzaxCommandSummary,
     MuzaxInstrument, MuzaxOscillator, MuzaxSong, MuzaxSongHeader,
+};
+pub use palette::{
+    gameplay_palette, gameplay_palettes, DASHBOARD_PALETTE_COLORS, DASHBOARD_PALETTE_START,
+    ROAD_PALETTE_COLORS, SHIP_PALETTE_COLORS, SHIP_PALETTE_START, VGA_PALETTE_SIZE,
+    WORLD_OVERLAY_COLORS, WORLD_PALETTE_START,
 };
 pub use roads::{
     analyze_road_descriptor, load_roads_lzs_bytes, load_roads_lzs_path, DispatchKindEntry,

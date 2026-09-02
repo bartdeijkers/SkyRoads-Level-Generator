@@ -235,7 +235,7 @@ fn distance_from_center(x_pos: f64) -> (f64, f64) {
 
 fn is_inside_tile_y(y_pos: f64, distance_from_center: f64, cell: LevelCell) -> bool {
     let distance_index = distance_from_center.round();
-    if distance_index > 37.0 {
+    if distance_index < 0.0 || distance_index >= TUNNEL_LOWS.len() as f64 {
         return false;
     }
     let distance_index = distance_index as usize;
@@ -254,7 +254,7 @@ fn is_inside_tile_y(y_pos: f64, distance_from_center: f64, cell: LevelCell) -> b
 
 fn is_inside_tunnel_y(y_pos: f64, distance_from_center: f64, cell: LevelCell) -> bool {
     let distance_index = distance_from_center.round();
-    if distance_index > 29.0 {
+    if distance_index < 0.0 || distance_index >= TUNNEL_LOWS.len() as f64 {
         return false;
     }
     let distance_index = distance_index as usize;
@@ -268,7 +268,10 @@ mod tests {
 
     use crate::load_roads_lzs_path;
 
-    use super::{level_from_road_entry, levels_from_roads_archive, TouchEffect, GROUND_Y};
+    use super::{
+        is_inside_tile_y, is_inside_tunnel_y, level_from_road_entry, levels_from_roads_archive,
+        LevelCell, TouchEffect, GROUND_Y,
+    };
 
     fn repo_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -307,5 +310,27 @@ mod tests {
                 .raw_descriptor,
             0x0400
         );
+    }
+
+    #[test]
+    fn tunnel_height_checks_reject_out_of_range_distance_indices() {
+        let tunnel_cell = LevelCell {
+            has_tile: true,
+            has_tunnel: true,
+            ..LevelCell::EMPTY
+        };
+
+        for distance_from_center in [-1.0, 30.0, 37.0] {
+            assert!(!is_inside_tile_y(
+                GROUND_Y,
+                distance_from_center,
+                tunnel_cell
+            ));
+            assert!(!is_inside_tunnel_y(
+                GROUND_Y,
+                distance_from_center,
+                tunnel_cell
+            ));
+        }
     }
 }

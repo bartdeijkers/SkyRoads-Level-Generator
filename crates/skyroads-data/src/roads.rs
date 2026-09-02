@@ -47,6 +47,7 @@ pub struct DispatchKindEntry {
     pub descriptor_count: usize,
     pub descriptors: Vec<u16>,
     pub samples: Vec<DispatchSample>,
+    pub earliest_playable_sample: Option<DispatchSample>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,7 +161,7 @@ pub fn load_roads_lzs_bytes(data: &[u8]) -> Result<RoadsArchive> {
             (widths[0], widths[1], widths[2]),
         )?;
 
-        if raw_tiles.len() % 2 != 0 {
+        if !raw_tiles.len().is_multiple_of(2) {
             return Err(Error::invalid_format(format!(
                 "road {index} decompressed to an odd number of bytes"
             )));
@@ -170,7 +171,7 @@ pub fn load_roads_lzs_bytes(data: &[u8]) -> Result<RoadsArchive> {
             .chunks_exact(2)
             .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
             .collect();
-        if values.len() % ROAD_COLUMNS != 0 {
+        if !values.len().is_multiple_of(ROAD_COLUMNS) {
             return Err(Error::invalid_format(format!(
                 "road {index} decompressed to {} cells, not a multiple of {ROAD_COLUMNS}",
                 values.len()
@@ -240,6 +241,7 @@ fn build_road_descriptor_catalog(roads: &[RoadEntry]) -> RoadDescriptorCatalog {
         roads: BTreeSet<usize>,
         descriptors: BTreeSet<u16>,
         samples: Vec<DispatchSample>,
+        earliest_playable_sample: Option<DispatchSample>,
     }
 
     let mut descriptor_counts: BTreeMap<u16, DescriptorAccum> = BTreeMap::new();
@@ -272,6 +274,22 @@ fn build_road_descriptor_catalog(roads: &[RoadEntry]) -> RoadDescriptorCatalog {
                         raw: value,
                     });
                 }
+
+                let candidate = DispatchSample {
+                    road_index: road.index,
+                    row_index,
+                    column_index,
+                    raw: value,
+                };
+                let is_playable_road = road.index > 0;
+                let is_earlier = dispatch_entry
+                    .earliest_playable_sample
+                    .is_none_or(|current| {
+                        dispatch_sample_order(candidate) < dispatch_sample_order(current)
+                    });
+                if is_playable_road && is_earlier {
+                    dispatch_entry.earliest_playable_sample = Some(candidate);
+                }
             }
         }
     }
@@ -295,6 +313,7 @@ fn build_road_descriptor_catalog(roads: &[RoadEntry]) -> RoadDescriptorCatalog {
             descriptor_count: accum.descriptors.len(),
             descriptors: accum.descriptors.into_iter().collect(),
             samples: accum.samples,
+            earliest_playable_sample: accum.earliest_playable_sample,
         })
         .collect::<Vec<_>>();
 
@@ -308,6 +327,10 @@ fn build_road_descriptor_catalog(roads: &[RoadEntry]) -> RoadDescriptorCatalog {
         dispatch_kinds,
         descriptors,
     }
+}
+
+fn dispatch_sample_order(sample: DispatchSample) -> (usize, usize, usize) {
+    (sample.row_index, sample.road_index, sample.column_index)
 }
 
 #[cfg(test)]
@@ -352,6 +375,35 @@ mod tests {
                 (3, 268),
                 (4, 1_079),
                 (5, 189),
+            ]
+        );
+
+        let earliest_playable = roads
+            .descriptor_catalog
+            .dispatch_kinds
+            .iter()
+            .map(|entry| {
+                let sample = entry
+                    .earliest_playable_sample
+                    .expect("every shipped dispatch kind must occur in a playable road");
+                (
+                    entry.dispatch_kind,
+                    sample.road_index,
+                    sample.row_index,
+                    sample.column_index,
+                    sample.raw,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            earliest_playable,
+            vec![
+                (0, 1, 0, 0, 0x0005),
+                (1, 20, 0, 3, 0x010F),
+                (2, 5, 0, 0, 0x0207),
+                (3, 26, 12, 3, 0x031F),
+                (4, 5, 1, 0, 0x0407),
+                (5, 9, 7, 0, 0x0507),
             ]
         );
     }

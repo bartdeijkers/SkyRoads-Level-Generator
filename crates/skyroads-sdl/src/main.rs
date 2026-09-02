@@ -1,17 +1,21 @@
+mod display_preferences;
 mod sdl;
 
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use sdl::{scancode, AudioDevice, Color, Joystick, Rect, Renderer, Sdl, Texture, Window};
+use sdl::{
+    scancode, AudioDevice, Color, DisplayInfo, DisplayModeInfo, Joystick, Rect, Renderer, Sdl,
+    Texture, Window,
+};
 use skyroads_audio_ref::{AttractAudioAssets, AudioMixer};
 use skyroads_core::{
     controller_state_from_dos_joystick, controller_state_from_dos_mouse, AppInput, AppMode,
-    AttractModeApp, AudioCommand, ControlMode, ControllerState, DisplayMode, DisplaySettings,
-    RenderScene, ShipState,
+    AttractModeApp, AudioCommand, ControlMode, ControllerState, DisplayMode, DisplayModeCatalog,
+    DisplaySettings, RenderScene, ShipState, VideoMode,
 };
 use skyroads_data::{
     levels_from_roads_archive, load_cfg_or_default, load_demo_rec_path, load_roads_lzs_path,
@@ -35,12 +39,13 @@ const GAMEPLAY_SMOKE_MIN_GAMEPLAY_TICKS: usize = 8;
 const GAMEPLAY_SMOKE_TIMEOUT_TICKS: usize = 180;
 const DOS_MOUSE_RECENTER_X: i32 = FRAMEBUFFER_WIDTH / 2;
 const DOS_MOUSE_CENTER_Y: i32 = FRAMEBUFFER_HEIGHT / 2;
+const DISPLAY_PREFERENCES_FILENAME: &str = "SKYROADS-RS-DISPLAY.CFG";
 
 #[derive(Debug, Clone)]
 struct LaunchConfig {
     source_root: PathBuf,
     automation: Option<AutomationMode>,
-    display_settings: DisplaySettings,
+    display_mode_override: Option<DisplayMode>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -90,10 +95,11 @@ struct KeyLatch {
     escape: bool,
     space: bool,
     quit: bool,
+    pending_app_input: AppInput,
 }
 
 impl KeyLatch {
-    fn sample(&mut self, keyboard: sdl::KeyboardState<'_>) -> HostInput {
+    fn sample(&mut self, keyboard: sdl::KeyboardState) -> HostInput {
         let shift_held =
             keyboard.is_pressed(scancode::LSHIFT) || keyboard.is_pressed(scancode::RSHIFT);
         let raw_enter = keyboard.is_pressed(scancode::RETURN);
@@ -120,27 +126,30 @@ impl KeyLatch {
         let toggle_fullscreen = enter_edge && shift_held;
         let enter = enter_edge && !shift_held;
 
+        self.pending_app_input.up |= up;
+        self.pending_app_input.down |= down;
+        self.pending_app_input.left |= left;
+        self.pending_app_input.right |= right;
+        self.pending_app_input.enter |= enter;
+        self.pending_app_input.escape |= escape;
+        self.pending_app_input.space |= space;
+        self.pending_app_input.up_held = current.up;
+        self.pending_app_input.down_held = current.down;
+        self.pending_app_input.left_held = current.left;
+        self.pending_app_input.right_held = current.right;
+        self.pending_app_input.enter_held = current.enter && !shift_held;
+        self.pending_app_input.space_held = current.space;
+
         HostInput {
             debug_toggle,
             toggle_fullscreen,
-            app: AppInput {
-                up,
-                down,
-                left,
-                right,
-                enter,
-                escape,
-                space,
-                up_held: current.up,
-                down_held: current.down,
-                left_held: current.left,
-                right_held: current.right,
-                enter_held: current.enter && !shift_held,
-                space_held: current.space,
-                gameplay_controls_override: None,
-            },
+            app: self.pending_app_input,
             quit,
         }
+    }
+
+    fn consume_app_edges(&mut self) {
+        self.pending_app_input = held_only_input(self.pending_app_input);
     }
 }
 
@@ -227,6 +236,13 @@ fn take_edge(previous: &mut bool, current: bool) -> bool {
     edge
 }
 
+fn music_random_seed() -> u32 {
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    elapsed.as_secs() as u32 ^ elapsed.subsec_nanos()
+}
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("error: {error}");
@@ -252,18 +268,51 @@ fn run() -> Result<()> {
         .map_err(|error| error.to_string())?;
     let mut audio_mixer = AudioMixer::new(audio_assets);
     let mut app = AttractModeApp::new(levels, demo);
+    if config.automation.is_none() {
+        app.set_music_random_seed(music_random_seed());
+    }
     let cfg_path = config.source_root.join("SKYROADS.CFG");
     let mut last_saved_cfg = load_cfg_or_default(&cfg_path).map_err(|error| error.to_string())?;
     app.apply_cfg(&last_saved_cfg);
-    app.set_display_settings(config.display_settings);
 
     let sdl = Sdl::init()?;
-    let window = Window::new("SkyRoads Native", WINDOW_WIDTH, WINDOW_HEIGHT)?;
-    apply_window_mode(&window, app.display_settings())?;
+    let window = Window::new(&sdl, "SkyRoads Native", WINDOW_WIDTH, WINDOW_HEIGHT)?;
+    let mut display_info = configure_display_modes(&window, &mut app);
+    let display_preferences_path = config.source_root.join(DISPLAY_PREFERENCES_FILENAME);
+    let saved_display_settings =
+        if config.automation.is_none() && config.display_mode_override.is_none() {
+            match display_preferences::load(&display_preferences_path) {
+                Ok(settings) => settings,
+                Err(error) => {
+                    eprintln!("warning: {error}; using borderless desktop");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+    if let Some(mode) = config.display_mode_override {
+        select_initial_display_mode(&mut app, mode);
+    } else if let Some(settings) = saved_display_settings {
+        if !app.set_display_settings(settings) {
+            eprintln!(
+                "warning: saved exclusive display mode is no longer available; using borderless desktop"
+            );
+        }
+    }
+    window.show();
+    let mut applied_display_settings = apply_window_mode_with_fallback(&window, &mut app, None)?;
+    if config.automation.is_none()
+        && config.display_mode_override.is_none()
+        && saved_display_settings != Some(applied_display_settings)
+    {
+        save_display_preferences(&display_preferences_path, applied_display_settings);
+    }
+    let mut last_saved_display_settings = applied_display_settings;
     let presenter = Renderer::new(&window)?;
-    let texture = Texture::new_rgba_streaming(&presenter, 320, 200)?;
-    let joystick = Joystick::open_first()?;
+    let joystick = Joystick::open_first(&sdl)?;
     let audio_device = AudioDevice::open_queue_playback_mono(
+        &sdl,
         audio_mixer.output_sample_rate(),
         AUDIO_DEVICE_BUFFER_SAMPLES,
     )?;
@@ -276,28 +325,28 @@ fn run() -> Result<()> {
     let mut current_mode = initial.mode;
     let mut current_scene = initial.render_scene;
     let mut debug_view = DebugViewMode::Off;
-    let mut applied_display_settings = app.display_settings();
     window.set_title(&window_title(current_mode, debug_view))?;
+    print_display_diagnostics(&sdl, display_info.as_ref(), &app, &presenter);
 
     if config.automation == Some(AutomationMode::GameplaySmoke) {
         println!("SkyRoads automated gameplay smoke test");
         println!("assets: {}", config.source_root.display());
-        return run_gameplay_smoke(
-            &sdl,
-            &window,
-            &presenter,
-            &texture,
-            &reference_renderer,
-            &mut app,
-            &cfg_path,
-            &mut last_saved_cfg,
-            &mut audio_mixer,
-            &audio_device,
+        return run_gameplay_smoke(GameplaySmokeRuntime {
+            sdl: &sdl,
+            window: &window,
+            presenter: &presenter,
+            renderer: &reference_renderer,
+            app: &mut app,
+            cfg_path: &cfg_path,
+            last_saved_cfg: &mut last_saved_cfg,
+            audio_mixer: &mut audio_mixer,
+            audio_device: &audio_device,
             current_mode,
             current_scene,
-        );
+        });
     }
 
+    let mut texture = Texture::new_rgba_streaming(&presenter, 320, 200)?;
     print_controls(&config.source_root);
 
     let timestep = Duration::from_nanos(1_000_000_000 / SIMULATION_HZ);
@@ -305,20 +354,36 @@ fn run() -> Result<()> {
     let mut latch = KeyLatch::default();
 
     loop {
-        if sdl.poll_quit_requested() {
+        let frame_started = Instant::now();
+        let pending_events = sdl.poll_events();
+        if pending_events.quit_requested {
             break;
         }
-        sdl.pump_events();
-        let mut display_rect = window_display_rect(&window);
+        if pending_events.renderer_reset {
+            texture = Texture::new_rgba_streaming(&presenter, 320, 200)?;
+        }
+        let mut input_rect = window_input_rect(&window);
+        if pending_events.display_changed {
+            display_info = configure_display_modes(&window, &mut app);
+            print_display_diagnostics(&sdl, display_info.as_ref(), &app, &presenter);
+            if app.display_settings() != applied_display_settings {
+                applied_display_settings = apply_window_mode_with_fallback(
+                    &window,
+                    &mut app,
+                    Some(applied_display_settings),
+                )?;
+                texture = Texture::new_rgba_streaming(&presenter, 320, 200)?;
+                current_scene = app.render_scene();
+                input_rect = window_input_rect(&window);
+            }
+        }
         let mut input = latch.sample(sdl.keyboard_state());
         let control_mode = app.control_mode();
         if input.quit {
             break;
         }
         if input.toggle_fullscreen {
-            let mut display_settings = app.display_settings();
-            display_settings.fullscreen = !display_settings.fullscreen;
-            app.set_display_settings(display_settings);
+            app.toggle_fullscreen();
         }
         if input.debug_toggle {
             debug_view = debug_view.next();
@@ -333,9 +398,9 @@ fn run() -> Result<()> {
                         mouse.x,
                         mouse.y,
                         mouse.buttons,
-                        display_rect,
+                        input_rect,
                     ));
-                    recenter_dos_mouse_x(&window, mouse.y, display_rect);
+                    recenter_dos_mouse_x(&window, mouse.y, input_rect);
                 }
                 ControlMode::Joystick => {
                     if let Some(joystick) = joystick.as_ref() {
@@ -354,6 +419,7 @@ fn run() -> Result<()> {
                 held_only_input(input.app)
             } else {
                 consumed_input = true;
+                latch.consume_app_edges();
                 input.app
             };
             let tick = app.tick(app_input);
@@ -363,18 +429,29 @@ fn run() -> Result<()> {
                 current_mode = tick.mode;
                 window.set_title(&window_title(current_mode, debug_view))?;
                 if app.control_mode() == ControlMode::Mouse && current_mode == AppMode::Gameplay {
-                    center_dos_mouse_for_gameplay(&window, display_rect);
+                    center_dos_mouse_for_gameplay(&window, input_rect);
                 }
             }
             current_scene = tick.render_scene;
             let display_settings = app.display_settings();
             if display_settings != applied_display_settings {
-                apply_window_mode(&window, display_settings)?;
-                applied_display_settings = display_settings;
-                display_rect = window_display_rect(&window);
+                applied_display_settings = apply_window_mode_with_fallback(
+                    &window,
+                    &mut app,
+                    Some(applied_display_settings),
+                )?;
+                texture = Texture::new_rgba_streaming(&presenter, 320, 200)?;
+                current_scene = app.render_scene();
+                input_rect = window_input_rect(&window);
                 if app.control_mode() == ControlMode::Mouse && current_mode == AppMode::Gameplay {
-                    center_dos_mouse_for_gameplay(&window, display_rect);
+                    center_dos_mouse_for_gameplay(&window, input_rect);
                 }
+            }
+            if config.automation.is_none()
+                && applied_display_settings != last_saved_display_settings
+            {
+                save_display_preferences(&display_preferences_path, applied_display_settings);
+                last_saved_display_settings = applied_display_settings;
             }
             next_tick += timestep;
             step_count += 1;
@@ -383,7 +460,7 @@ fn run() -> Result<()> {
             next_tick = now + timestep;
         }
 
-        display_rect = window_display_rect(&window);
+        let display_rect = renderer_display_rect(&presenter)?;
         fill_audio_queue(&audio_device, &mut audio_mixer)?;
         present_scene(
             &presenter,
@@ -394,36 +471,51 @@ fn run() -> Result<()> {
             display_rect,
         )?;
 
-        let sleep_for = next_tick
-            .saturating_duration_since(Instant::now())
-            .min(Duration::from_millis(2));
-        if !sleep_for.is_zero() {
-            thread::sleep(sleep_for);
+        if !presenter.vsync_enabled() {
+            let sleep_for = presentation_interval(&app).saturating_sub(frame_started.elapsed());
+            if !sleep_for.is_zero() {
+                thread::sleep(sleep_for);
+            }
         }
     }
 
     Ok(())
 }
 
-fn run_gameplay_smoke(
-    sdl: &Sdl,
-    window: &Window,
-    presenter: &Renderer,
-    texture: &Texture,
-    renderer: &ReferenceRenderer,
-    app: &mut AttractModeApp,
-    cfg_path: &Path,
-    last_saved_cfg: &mut SkyroadsCfg,
-    audio_mixer: &mut AudioMixer,
-    audio_device: &AudioDevice,
-    mut current_mode: AppMode,
-    mut current_scene: RenderScene,
-) -> Result<()> {
+struct GameplaySmokeRuntime<'a, 'sdl, 'window> {
+    sdl: &'a Sdl,
+    window: &'a Window<'sdl>,
+    presenter: &'a Renderer<'window>,
+    renderer: &'a ReferenceRenderer,
+    app: &'a mut AttractModeApp,
+    cfg_path: &'a Path,
+    last_saved_cfg: &'a mut SkyroadsCfg,
+    audio_mixer: &'a mut AudioMixer,
+    audio_device: &'a AudioDevice<'sdl>,
+    current_mode: AppMode,
+    current_scene: RenderScene,
+}
+
+fn run_gameplay_smoke(runtime: GameplaySmokeRuntime<'_, '_, '_>) -> Result<()> {
+    let GameplaySmokeRuntime {
+        sdl,
+        window,
+        presenter,
+        renderer,
+        app,
+        cfg_path,
+        last_saved_cfg,
+        audio_mixer,
+        audio_device,
+        mut current_mode,
+        mut current_scene,
+    } = runtime;
+    let mut texture = Texture::new_rgba_streaming(presenter, 320, 200)?;
     let mut smoke = GameplaySmokeAutomation::default();
-    let mut display_rect = window_display_rect(window);
+    let mut display_rect = renderer_display_rect(presenter)?;
     present_scene(
         presenter,
-        texture,
+        &texture,
         renderer,
         &current_scene,
         DebugViewMode::Off,
@@ -431,10 +523,13 @@ fn run_gameplay_smoke(
     )?;
 
     loop {
-        if sdl.poll_quit_requested() {
+        let pending_events = sdl.poll_events();
+        if pending_events.quit_requested {
             return Err("SDL quit requested before gameplay smoke test completed".to_string());
         }
-        sdl.pump_events();
+        if pending_events.renderer_reset {
+            texture = Texture::new_rgba_streaming(presenter, 320, 200)?;
+        }
 
         let input = smoke.next_input(current_mode);
         let tick = app.tick(input);
@@ -445,10 +540,10 @@ fn run_gameplay_smoke(
             window.set_title(&window_title(current_mode, DebugViewMode::Off))?;
         }
         current_scene = tick.render_scene;
-        display_rect = window_display_rect(window);
+        display_rect = renderer_display_rect(presenter)?;
         present_scene(
             presenter,
-            texture,
+            &texture,
             renderer,
             &current_scene,
             DebugViewMode::Off,
@@ -471,7 +566,8 @@ fn present_scene(
     display_rect: Rect,
 ) -> Result<()> {
     let frame = renderer.render_scene_with_debug(scene, debug_view);
-    texture.update_rgba(&frame.pixels_rgba, usize::from(frame.width) * 4)?;
+    let pixels_rgba = frame.to_rgba();
+    texture.update_rgba(&pixels_rgba, usize::from(frame.width) * 4)?;
     presenter.set_draw_color(Color::rgb(0, 0, 0))?;
     presenter.clear()?;
     presenter.copy_texture(texture, display_rect)?;
@@ -522,16 +618,27 @@ fn fill_audio_queue(audio_device: &AudioDevice, mixer: &mut AudioMixer) -> Resul
 }
 
 fn parse_args() -> Result<LaunchConfig> {
+    parse_args_from(env::args().skip(1))
+}
+
+fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<LaunchConfig> {
     let mut source_root = None;
     let mut automation = None;
-    let mut display_settings = DisplaySettings::default();
+    let mut display_mode_override = None;
 
-    for arg in env::args().skip(1) {
+    for arg in args {
         match arg.as_str() {
             "-h" | "--help" => return Err(usage().to_string()),
             "--smoke-gameplay" => automation = Some(AutomationMode::GameplaySmoke),
-            "--fullscreen" => display_settings.fullscreen = true,
-            "--borderless" => display_settings.borderless = true,
+            "--fullscreen" | "--borderless" => {
+                display_mode_override = Some(DisplayMode::BorderlessDesktop);
+            }
+            "--exclusive-fullscreen" => {
+                display_mode_override = Some(DisplayMode::ExclusiveFullscreen);
+            }
+            "--windowed" => {
+                display_mode_override = Some(DisplayMode::Windowed);
+            }
             _ if arg.starts_with('-') => {
                 return Err(format!("unknown option: {arg}\n{}", usage()));
             }
@@ -543,15 +650,19 @@ fn parse_args() -> Result<LaunchConfig> {
         }
     }
 
+    if automation.is_some() && display_mode_override.is_none() {
+        display_mode_override = Some(DisplayMode::Windowed);
+    }
+
     Ok(LaunchConfig {
         source_root: source_root.unwrap_or_else(|| PathBuf::from(".")),
         automation,
-        display_settings,
+        display_mode_override,
     })
 }
 
 fn usage() -> &'static str {
-    "usage: cargo run -p skyroads-sdl -- [--smoke-gameplay] [--fullscreen] [--borderless] [source_root]"
+    "usage: cargo run -p skyroads-sdl -- [--smoke-gameplay] [--windowed|--fullscreen|--borderless|--exclusive-fullscreen] [source_root]"
 }
 
 fn print_controls(source_root: &Path) {
@@ -562,7 +673,7 @@ fn print_controls(source_root: &Path) {
     println!("  Left / Right  steer, level select, settings menu");
     println!("  Enter      select, start level, retry after crash, return after win");
     println!("  Space      skip intro, start level, jump, retry after crash, return after win");
-    println!("  Shift+Enter toggle fullscreen on/off");
+    println!("  Shift+Enter toggle the last fullscreen mode/windowed");
     println!("  Tab        cycle debug views");
     println!("  Escape     back to previous menu, exit gameplay to level select");
     println!("  Q          quit");
@@ -571,8 +682,9 @@ fn print_controls(source_root: &Path) {
     println!("  joystick   first SDL joystick/gamepad axis 0/1 + button 0");
     println!("  mouse      DOS-style mouse thresholds");
     println!("display modes:");
-    println!("  fullscreen  desktop fullscreen");
-    println!("  borderless  centered 1280x960 borderless window");
+    println!("  borderless  current desktop resolution (default)");
+    println!("  exclusive   selected SDL resolution and refresh rate");
+    println!("  windowed    centered 1280x960 window");
     println!("mouse mode:");
     println!("  move mouse left/right  steer");
     println!("  move mouse up/down     throttle/brake");
@@ -609,22 +721,205 @@ fn commands_require_flush(commands: &[AudioCommand]) -> bool {
     })
 }
 
-fn apply_window_mode(window: &Window, settings: DisplaySettings) -> Result<()> {
-    match settings.active_mode() {
-        DisplayMode::Fullscreen => window.set_fullscreen_desktop(true)?,
-        DisplayMode::Windowed | DisplayMode::Borderless => {
-            window.set_fullscreen_desktop(false)?;
-            window.set_bordered(settings.active_mode() == DisplayMode::Windowed);
-            window.set_size(WINDOW_WIDTH, WINDOW_HEIGHT);
-            window.center();
-        }
-    }
-    Ok(())
+fn display_mode_catalog(display_info: &DisplayInfo) -> Result<DisplayModeCatalog> {
+    let desktop_mode = video_mode(display_info.desktop_mode)?;
+    let fullscreen_modes = display_info
+        .fullscreen_modes
+        .iter()
+        .copied()
+        .map(video_mode)
+        .collect::<Result<Vec<_>>>()?;
+    Ok(DisplayModeCatalog::new(desktop_mode, fullscreen_modes))
 }
 
-fn window_display_rect(window: &Window) -> Rect {
+fn configure_display_modes(window: &Window, app: &mut AttractModeApp) -> Option<DisplayInfo> {
+    let display_info = match window.display_info() {
+        Ok(display_info) => display_info,
+        Err(error) => {
+            eprintln!(
+                "warning: could not discover exclusive display modes: {error}; borderless and windowed modes remain available"
+            );
+            app.configure_display_modes(DisplayModeCatalog::default());
+            return None;
+        }
+    };
+    let catalog = match display_mode_catalog(&display_info) {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            eprintln!(
+                "warning: could not use discovered exclusive display modes: {error}; borderless and windowed modes remain available"
+            );
+            app.configure_display_modes(DisplayModeCatalog::default());
+            return None;
+        }
+    };
+    app.configure_display_modes(catalog);
+    Some(display_info)
+}
+
+fn save_display_preferences(path: &Path, settings: DisplaySettings) {
+    if let Err(error) = display_preferences::save(path, settings) {
+        eprintln!("warning: {error}; continuing without persisted display preferences");
+    }
+}
+
+fn video_mode(mode: DisplayModeInfo) -> Result<VideoMode> {
+    VideoMode::new(mode.width, mode.height, mode.refresh_rate_hz).ok_or_else(|| {
+        format!(
+            "SDL reported invalid display mode {}x{} {:?} Hz",
+            mode.width, mode.height, mode.refresh_rate_hz
+        )
+    })
+}
+
+fn sdl_display_mode(mode: VideoMode) -> DisplayModeInfo {
+    DisplayModeInfo {
+        width: mode.width(),
+        height: mode.height(),
+        refresh_rate_hz: mode.refresh_hz(),
+    }
+}
+
+fn select_initial_display_mode(app: &mut AttractModeApp, mode: DisplayMode) {
+    let settings = match mode {
+        DisplayMode::Windowed => DisplaySettings::Windowed,
+        DisplayMode::BorderlessDesktop => DisplaySettings::BorderlessDesktop,
+        DisplayMode::ExclusiveFullscreen => app
+            .selected_video_mode()
+            .map(DisplaySettings::ExclusiveFullscreen)
+            .unwrap_or(DisplaySettings::BorderlessDesktop),
+    };
+    let _ = app.set_display_settings(settings);
+}
+
+fn apply_window_mode_with_fallback(
+    window: &Window,
+    app: &mut AttractModeApp,
+    previous: Option<DisplaySettings>,
+) -> Result<DisplaySettings> {
+    let requested = app.display_settings();
+    let mut candidates = vec![requested];
+    if let Some(previous) = previous {
+        candidates.push(previous);
+    }
+    candidates.push(DisplaySettings::BorderlessDesktop);
+    candidates.push(DisplaySettings::Windowed);
+
+    let mut attempted = Vec::new();
+    let mut last_error = None;
+    for candidate in candidates {
+        if attempted.contains(&candidate) {
+            continue;
+        }
+        attempted.push(candidate);
+
+        match apply_window_mode(window, candidate) {
+            Ok(()) => {
+                let accepted = app.set_display_settings(candidate);
+                if accepted {
+                    return Ok(candidate);
+                }
+                last_error = Some("core rejected a previously validated display mode".to_string());
+            }
+            Err(error) => {
+                eprintln!("warning: could not apply {candidate:?}: {error}");
+                last_error = Some(error);
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| "no display mode could be applied".to_string()))
+}
+
+fn apply_window_mode(window: &Window, settings: DisplaySettings) -> Result<()> {
+    match settings {
+        DisplaySettings::Windowed => window.set_windowed(WINDOW_WIDTH, WINDOW_HEIGHT),
+        DisplaySettings::BorderlessDesktop => window.set_borderless_desktop(),
+        DisplaySettings::ExclusiveFullscreen(mode) => {
+            window.set_exclusive_fullscreen(sdl_display_mode(mode))
+        }
+    }
+}
+
+fn window_input_rect(window: &Window) -> Rect {
     let (window_width, window_height) = window.size();
     fit_rect_with_aspect(window_width, window_height, WINDOW_WIDTH, WINDOW_HEIGHT)
+}
+
+fn renderer_display_rect(renderer: &Renderer) -> Result<Rect> {
+    let (output_width, output_height) = renderer.output_size()?;
+    Ok(fit_rect_with_aspect(
+        output_width,
+        output_height,
+        WINDOW_WIDTH,
+        WINDOW_HEIGHT,
+    ))
+}
+
+fn presentation_interval(app: &AttractModeApp) -> Duration {
+    let active_refresh_hz = app
+        .display_settings()
+        .video_mode()
+        .and_then(VideoMode::refresh_hz);
+    let desktop_refresh_hz = app
+        .display_mode_catalog()
+        .desktop_mode()
+        .and_then(VideoMode::refresh_hz);
+    let refresh_hz = active_refresh_hz
+        .or(desktop_refresh_hz)
+        .unwrap_or(60)
+        .max(1);
+    Duration::from_nanos(1_000_000_000 / u64::from(refresh_hz))
+}
+
+fn print_display_diagnostics(
+    sdl: &Sdl,
+    display_info: Option<&DisplayInfo>,
+    app: &AttractModeApp,
+    renderer: &Renderer,
+) {
+    println!("SDL: {} ({})", sdl.version(), sdl.video_driver());
+    if let Some(display_info) = display_info {
+        println!(
+            "display: {} desktop {}",
+            display_info.name,
+            format_display_mode(display_info.desktop_mode)
+        );
+        println!(
+            "exclusive modes: {} suitable of {} readable ({} skipped); selected {}",
+            app.display_mode_catalog().modes().len(),
+            display_info.fullscreen_modes.len(),
+            display_info.skipped_fullscreen_modes,
+            app.selected_video_mode()
+                .map(format_video_mode)
+                .unwrap_or_else(|| "unavailable".to_string())
+        );
+    } else {
+        println!("display: exclusive mode discovery unavailable");
+    }
+    println!(
+        "presentation: {}",
+        if renderer.vsync_enabled() {
+            "vsync"
+        } else {
+            "manual refresh-rate limiter"
+        }
+    );
+}
+
+fn format_display_mode(mode: DisplayModeInfo) -> String {
+    format!(
+        "{}x{} {}",
+        mode.width,
+        mode.height,
+        mode.refresh_rate_hz
+            .map(|refresh_hz| format!("{refresh_hz}Hz"))
+            .unwrap_or_else(|| "default Hz".to_string())
+    )
+}
+
+fn format_video_mode(mode: VideoMode) -> String {
+    format_display_mode(sdl_display_mode(mode))
 }
 
 fn fit_rect_with_aspect(
@@ -714,15 +1009,13 @@ fn center_dos_mouse_for_gameplay(window: &Window, display_rect: Rect) {
 
 #[cfg(test)]
 mod tests {
-    use super::{scancode, sdl, KeyLatch};
+    use super::{
+        fit_rect_with_aspect, parse_args_from, scancode, sdl, AutomationMode, DisplayMode,
+        KeyLatch, Rect,
+    };
 
-    fn keyboard(keys: &[usize]) -> sdl::KeyboardState<'static> {
-        let mut state = vec![0u8; scancode::RSHIFT + 1];
-        for key in keys {
-            state[*key] = 1;
-        }
-        let leaked = Box::leak(state.into_boxed_slice());
-        sdl::KeyboardState::from_keys(leaked)
+    fn keyboard(keys: &[usize]) -> sdl::KeyboardState {
+        sdl::KeyboardState::from_keys(keys)
     }
 
     #[test]
@@ -743,5 +1036,106 @@ mod tests {
         assert!(!sample.toggle_fullscreen);
         assert!(sample.app.enter);
         assert!(sample.app.enter_held);
+    }
+
+    #[test]
+    fn menu_edge_remains_pending_until_a_simulation_tick_consumes_it() {
+        let mut latch = KeyLatch::default();
+
+        let pressed = latch.sample(keyboard(&[scancode::DOWN]));
+        assert!(pressed.app.down);
+
+        let released_before_tick = latch.sample(keyboard(&[]));
+        assert!(released_before_tick.app.down);
+        assert!(!released_before_tick.app.down_held);
+
+        latch.consume_app_edges();
+        let after_tick = latch.sample(keyboard(&[]));
+        assert!(!after_tick.app.down);
+    }
+
+    #[test]
+    fn consumed_menu_edge_does_not_repeat_while_the_key_stays_held() {
+        let mut latch = KeyLatch::default();
+
+        assert!(latch.sample(keyboard(&[scancode::DOWN])).app.down);
+        latch.consume_app_edges();
+
+        let still_held = latch.sample(keyboard(&[scancode::DOWN]));
+        assert!(!still_held.app.down);
+        assert!(still_held.app.down_held);
+    }
+
+    #[test]
+    fn interactive_launch_defaults_to_borderless_desktop() {
+        let config = parse_args_from(Vec::<String>::new()).unwrap();
+
+        assert_eq!(config.display_mode_override, None);
+        assert_eq!(config.automation, None);
+    }
+
+    #[test]
+    fn headless_smoke_defaults_to_windowed_but_respects_explicit_mode() {
+        let smoke = parse_args_from(["--smoke-gameplay".to_string()]).unwrap();
+        assert_eq!(smoke.automation, Some(AutomationMode::GameplaySmoke));
+        assert_eq!(smoke.display_mode_override, Some(DisplayMode::Windowed));
+
+        let exclusive = parse_args_from([
+            "--smoke-gameplay".to_string(),
+            "--exclusive-fullscreen".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(
+            exclusive.display_mode_override,
+            Some(DisplayMode::ExclusiveFullscreen)
+        );
+    }
+
+    #[test]
+    fn legacy_fullscreen_flag_selects_borderless_desktop() {
+        let config = parse_args_from(["--fullscreen".to_string()]).unwrap();
+
+        assert_eq!(
+            config.display_mode_override,
+            Some(DisplayMode::BorderlessDesktop)
+        );
+    }
+
+    #[test]
+    fn modern_widescreen_outputs_keep_the_four_by_three_presentation_centered() {
+        for (width, height, expected) in [
+            (
+                1920,
+                1080,
+                Rect {
+                    x: 240,
+                    y: 0,
+                    w: 1440,
+                    h: 1080,
+                },
+            ),
+            (
+                2560,
+                1440,
+                Rect {
+                    x: 320,
+                    y: 0,
+                    w: 1920,
+                    h: 1440,
+                },
+            ),
+            (
+                3840,
+                2160,
+                Rect {
+                    x: 480,
+                    y: 0,
+                    w: 2880,
+                    h: 2160,
+                },
+            ),
+        ] {
+            assert_eq!(fit_rect_with_aspect(width, height, 1280, 960), expected);
+        }
     }
 }

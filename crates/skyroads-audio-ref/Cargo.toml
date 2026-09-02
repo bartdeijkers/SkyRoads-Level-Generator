@@ -7,5 +7,6 @@ edition = "2021"
 path = "src/lib.rs"
 
 [dependencies]
+oplon = "1.0.0"
 skyroads-core = { path = "../skyroads-core" }
 skyroads-data = { path = "../skyroads-data" }

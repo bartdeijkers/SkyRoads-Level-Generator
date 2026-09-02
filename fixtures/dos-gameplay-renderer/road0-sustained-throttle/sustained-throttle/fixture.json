@@ -1,0 +1,468 @@
+{
+  "breakpoint_name": "renderer_entry",
+  "bundle_version": 2,
+  "checkpoint_name": "sustained-throttle",
+  "dumps": [
+    {
+      "address": "DS:0E36",
+      "current_row": 27,
+      "file": "dumps/renderer_state.bin",
+      "length": 32,
+      "name": "renderer_state",
+      "raw_words": [
+        27,
+        80,
+        30240,
+        22139,
+        0,
+        0,
+        31027,
+        13451
+      ],
+      "road_row_group": 3,
+      "sha256": "bf2876aaedb028205defb1148a24fd631df9848a09cdc8167f8a62940f5779db",
+      "trekdat_slot": 3
+    },
+    {
+      "active_sprite_offset": 30240,
+      "active_sprite_segment": 22139,
+      "address": "DS:0E34",
+      "file": "dumps/ship_render_state.bin",
+      "length": 16,
+      "name": "ship_render_state",
+      "sha256": "c0631996c9b678cf6e4742ba3f31fcf6c05a5782b04a20b6178541e8336d43fb"
+    },
+    {
+      "address": "DS:95F8",
+      "file": "dumps/gameplay_motion_state.bin",
+      "length": 64,
+      "name": "gameplay_motion_state",
+      "sha256": "2cc5fa6c413d68c37930280af01b38bc1051fb74dd86b7c3c85d0d99bed69978"
+    },
+    {
+      "address": "DS:0BA2",
+      "file": "dumps/gameplay_key_state.bin",
+      "length": 10,
+      "name": "gameplay_key_state",
+      "sha256": "00f1fc659224de3cf33ee4d5314aac08c1ca62feed06c7fd934fc3384056e738"
+    },
+    {
+      "address": "DS:160C",
+      "file": "dumps/sprite_cycle_counter.bin",
+      "length": 2,
+      "name": "sprite_cycle_counter",
+      "sha256": "8e2ada6ef626983be1fe9a365ceeb424ee59b884e144f7541cf191116876de04",
+      "value": 28
+    },
+    {
+      "address": "DS:54B8",
+      "file": "dumps/dashboard_speed_velocity.bin",
+      "length": 4,
+      "name": "dashboard_speed_velocity",
+      "sha256": "fb935dd02332f9ca3ef052533887154401f093b3ce3360a00055a679abe29d01",
+      "value": 2100
+    },
+    {
+      "address": "DS:AF3E",
+      "file": "dumps/jump_master_velocity_delta.bin",
+      "length": 4,
+      "name": "jump_master_velocity_delta",
+      "sha256": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+      "value": 0
+    },
+    {
+      "address": "DS:41CA",
+      "file": "dumps/dashboard_speed_visible_count.bin",
+      "length": 2,
+      "name": "dashboard_speed_visible_count",
+      "sha256": "ceb827ad3d3884fd4d50ae6099d6d50c09a21e72ebd309708e8b69d93df19e55",
+      "value": 6
+    },
+    {
+      "address": "DS:456A",
+      "file": "dumps/dashboard_lift_visible_count.bin",
+      "length": 2,
+      "name": "dashboard_lift_visible_count",
+      "sha256": "96a296d224f285c67bee93c30f8a309157f0daa35dc5b87e410b78630a09cfc7",
+      "value": 0
+    },
+    {
+      "address": "DS:4576",
+      "file": "dumps/ship_lifecycle_state.bin",
+      "length": 8,
+      "name": "ship_lifecycle_state",
+      "raw_words": [
+        0,
+        0,
+        10,
+        0
+      ],
+      "sha256": "dd73a46975594b97bfef18db6ea376dafa119d27bfa7b0e2f94e0e3e67420f42"
+    },
+    {
+      "address": "DS:4566",
+      "file": "dumps/gameplay_lifecycle_state.bin",
+      "length": 24,
+      "name": "gameplay_lifecycle_state",
+      "raw_words": [
+        0,
+        0,
+        0,
+        8534,
+        8,
+        0,
+        18,
+        180,
+        0,
+        0,
+        10,
+        0
+      ],
+      "sha256": "d732c86837c45bf3947ae8ee3c658c406c9fea428969a853c2787386801f3942"
+    },
+    {
+      "address": "DS:9628",
+      "file": "dumps/ship_z_position.bin",
+      "length": 4,
+      "name": "ship_z_position",
+      "sha256": "819836b3dc806761a38b0f467555a49822bd418500ae4b7943c4217485daac60"
+    },
+    {
+      "address": "DS:AF2C",
+      "file": "dumps/ship_xy_state.bin",
+      "length": 32,
+      "name": "ship_xy_state",
+      "sha256": "3c036168aa1251d25f22016ca69568b5cfb42fe40e6f6cecff479e536b383880"
+    },
+    {
+      "address": "DS:54A0",
+      "file": "dumps/ship_fuel_remaining.bin",
+      "length": 2,
+      "name": "ship_fuel_remaining",
+      "sha256": "cc3ce4b0e5ffa57c7d1423cb20c56e3882a8344d2e17ffaaa01019b8f0d926e8"
+    },
+    {
+      "address": "DS:B14C",
+      "file": "dumps/ship_oxygen_remaining.bin",
+      "length": 2,
+      "name": "ship_oxygen_remaining",
+      "sha256": "374628e212888506db40f76e8217c2db77991106021a8e8d1dffb34a21dc2f8d"
+    },
+    {
+      "address": "DS:41CE",
+      "file": "dumps/active_road_length.bin",
+      "length": 2,
+      "name": "active_road_length",
+      "sha256": "bb153e97380f82aa57033add2c11b28a3ae640c8daaa89d2bd5bd317456ecb03"
+    },
+    {
+      "address": "SS:0E92",
+      "file": "dumps/ship_clip_mask.bin",
+      "length": 957,
+      "name": "ship_clip_mask",
+      "sha256": "99eda845e43e20740a80b29e7d21b9df4966219de342689e12631a984401525b"
+    },
+    {
+      "address": "DS:0B77",
+      "file": "dumps/tile_class_by_low3.bin",
+      "length": 8,
+      "name": "tile_class_by_low3",
+      "sha256": "ef91f417bfae7ed760420c3605078016dd265a85af54c18d83f22a7936c625b0",
+      "values": [
+        1,
+        2,
+        3,
+        3,
+        4,
+        4,
+        1,
+        1
+      ]
+    },
+    {
+      "address": "SS:0B7F",
+      "file": "dumps/draw_dispatch_by_type.bin",
+      "length": 32,
+      "name": "draw_dispatch_by_type",
+      "sha256": "a402b963d7c25a931706f749a211cf38b5d02fc183258309333a4b547acff2db",
+      "targets": [
+        11856,
+        12349,
+        11935,
+        12001,
+        12092,
+        12208,
+        15021,
+        15021,
+        15021,
+        15021,
+        15021,
+        15021,
+        15021,
+        15021,
+        15021,
+        15021
+      ]
+    },
+    {
+      "address": "SS:0E82",
+      "file": "dumps/trekdat_segment_table.bin",
+      "length": 16,
+      "name": "trekdat_segment_table",
+      "segments": [
+        6988,
+        10542,
+        12154,
+        13801,
+        15471,
+        17177,
+        18852,
+        20503
+      ],
+      "sha256": "c0674c72c6b16bb931dc6b5643036e6de9c7e8d80f4d7db27317ec37b5a2f29a"
+    },
+    {
+      "address": "SS:0312",
+      "file": "dumps/vga_raster_tables.bin",
+      "length": 1040,
+      "name": "vga_raster_tables",
+      "sha256": "2a0efadde0de87f2df33fb284d5490a71ab42e9d57c01eb83b90f0c474a433dd"
+    },
+    {
+      "address": "DS:5182",
+      "component_bits": 6,
+      "encoding": "rgb",
+      "entry_count": 256,
+      "file": "dumps/gameplay_palette_buffer_6bit.bin",
+      "length": 768,
+      "name": "gameplay_palette_buffer_6bit",
+      "sha256": "48e53e3717007eb07e976cefeba5809a197a2b5f9533a57c9c99b5a417464d03"
+    },
+    {
+      "address": "A000:0000",
+      "encoding": "indexed-vga",
+      "file": "frame.indices",
+      "height": 200,
+      "length": 64000,
+      "name": "vga_frame",
+      "row_stride": 320,
+      "sha256": "a506617755906cf5d3fac171cf1df81db43e81fbfb971122f869b92d631723a2",
+      "width": 320
+    },
+    {
+      "address": "VGA:DAC",
+      "component_bits": 6,
+      "encoding": "rgb",
+      "entry_count": 256,
+      "file": "palette.vga6",
+      "length": 768,
+      "name": "vga_palette_6bit",
+      "sha256": "09cb788a87a6394a21b7698f54c54e0b1032868376120ba3b6f75e711a7648c7"
+    },
+    {
+      "address": "DS:16C4",
+      "byte_values": [
+        5,
+        0,
+        0,
+        0,
+        5,
+        0,
+        5,
+        0,
+        5,
+        0,
+        0,
+        0,
+        5,
+        0
+      ],
+      "file": "dumps/active_road_window.bin",
+      "length": 14,
+      "name": "active_road_window",
+      "sha256": "680c63f925afcf13d39f8dcb2e73f8f460335e619d30f31d9eb37e161d494a36",
+      "word_values": [
+        5,
+        0,
+        5,
+        5,
+        5,
+        0,
+        5
+      ]
+    },
+    {
+      "address": "35E9:0000",
+      "file": "dumps/active_trekdat_pointer_grid.bin",
+      "first_pointer_words": [
+        624,
+        645,
+        649,
+        663,
+        675,
+        713,
+        731,
+        749,
+        753,
+        767,
+        779,
+        817,
+        832,
+        850,
+        854,
+        865
+      ],
+      "length": 624,
+      "name": "active_trekdat_pointer_grid",
+      "nonzero_pointer_count": 312,
+      "pointer_word_count": 312,
+      "sha256": "7175baa9fab86fd08c7a3e767e7b7b7f6572935f9d05081d0549eb13d3273268"
+    },
+    {
+      "address": "567B:7620",
+      "file": "dumps/active_ship_sprite.bin",
+      "length": 696,
+      "name": "active_ship_sprite",
+      "sha256": "8112fc8e9d6aa70baa2341c1396080d57058c7efc88a99570e0bb530f1fffefc"
+    }
+  ],
+  "frame_file": "frame.indices",
+  "frame_sha256": "a506617755906cf5d3fac171cf1df81db43e81fbfb971122f869b92d631723a2",
+  "framebuffer_context": {
+    "lift_indicator_visible_count": 0,
+    "ship_sprite_phase": 1,
+    "speed_gauge_visible_count": 6
+  },
+  "hit_index": 1,
+  "palette_file": "palette.vga6",
+  "preset": "road0-sustained-throttle",
+  "registers": {
+    "ax": 256,
+    "bp": 47326,
+    "bx": 6,
+    "cs": 2084,
+    "cx": 0,
+    "di": 30,
+    "ds": 3730,
+    "dx": 0,
+    "es": 40960,
+    "ip": 11523,
+    "si": 43,
+    "sp": 47290,
+    "ss": 3730
+  },
+  "source_files": {
+    "ANIM.LZS": {
+      "length": 44808,
+      "sha256": "6630fcf84f568dd505303ab0dd5f8c79e576ee2c93c585f973c62956ef667afc"
+    },
+    "CARS.LZS": {
+      "length": 8167,
+      "sha256": "86b7832783bde0b67443104eba66196ed8ba31148339192db00c67eaddf9929e"
+    },
+    "DASHBRD.LZS": {
+      "length": 10860,
+      "sha256": "c1ad75492f9d93fa9e40c17b39fbd4c21ee6d9188547fea09fbc41c9e719ea8c"
+    },
+    "DEMO.REC": {
+      "length": 6398,
+      "sha256": "2bb53c6cd62f2cd2a8657cd05bf9e33054570c1e3e98dd89e18587156867016e"
+    },
+    "FUL_DISP.DAT": {
+      "length": 407,
+      "sha256": "a6f50b73abd0d2ebf97508cf12e2b9f7b29aeff29b794a2ab595ede9c93a12b5"
+    },
+    "GOMENU.LZS": {
+      "length": 26695,
+      "sha256": "8852c378ecdb9165183924ca81b3b0ace9ed73b1cca5ac364fbfe18f6abc885f"
+    },
+    "HELPMENU.LZS": {
+      "length": 60606,
+      "sha256": "f016e6eb479e163dca426b3111b796067eea62dbf9011ba99b65d0f0da1660a8"
+    },
+    "INTRO.LZS": {
+      "length": 20874,
+      "sha256": "f37fa5819914e4f968a7b884fa8c827dcdf4be9e6a567e9b9da4fdd62bd276e5"
+    },
+    "INTRO.SND": {
+      "length": 32100,
+      "sha256": "f2eff08cf5ed7986c89232d21468b53c7cce5826f519585d44d97eec58bb510c"
+    },
+    "MAINMENU.LZS": {
+      "length": 1140,
+      "sha256": "45b0dbb2866f8b84b0253ca002fab01fba0c53b1f8593b1fb18119e570ae3a07"
+    },
+    "MUZAX.LZS": {
+      "length": 16821,
+      "sha256": "be741b53f33a1d7a488b1a66d7df4a20ca44c4d7a252a2984e2325f7a8b0d8a4"
+    },
+    "OXY_DISP.DAT": {
+      "length": 395,
+      "sha256": "a5d00c24e3b0d6cb14792926055445fa970e2109e8da2ff4ff2b72fe81ec3d6f"
+    },
+    "ROADS.LZS": {
+      "length": 17102,
+      "sha256": "eae3754bcbf9db20f076e330038d29401b2b5eb400bb148d772edb4ba23442ce"
+    },
+    "SETMENU.LZS": {
+      "length": 24666,
+      "sha256": "86fd9ad57ea787beda20f00b4dce1ed4d1ae0e4b2645cb529b65ae734f6df636"
+    },
+    "SFX.SND": {
+      "length": 25807,
+      "sha256": "7c17c601f5e58ef9c286cf9e6c19aa8fd287cfa6836be3920dbb78d904c3ea4e"
+    },
+    "SKYROADS.EXE": {
+      "length": 30472,
+      "sha256": "c3a55223e359749555535e138ef4219bc94458639e44f70edf3cfcb2f28c26ac"
+    },
+    "SPEED.DAT": {
+      "length": 3903,
+      "sha256": "97bff2d41fdde4953d986cb2d9011718f302ff46bb8d21abbb267343b086b7fc"
+    },
+    "TREKDAT.LZS": {
+      "length": 98148,
+      "sha256": "513b572fc159f6e8219fd3b53f5f8e51df71ef0df7e4e6c72219b08755f3819b"
+    },
+    "WORLD0.LZS": {
+      "length": 26645,
+      "sha256": "e120ca2f8a9fb44c5f921b0f76bfa178ad79b19ba94c9e0627bebf0672b21358"
+    },
+    "WORLD1.LZS": {
+      "length": 15696,
+      "sha256": "c1c41f5730010aa2b4051697ce02d381fdb4f6b4d4ab9cd4d3c80c19353aee91"
+    },
+    "WORLD2.LZS": {
+      "length": 27755,
+      "sha256": "bd40edbe99818554749616dd248fa15aef76f4f2da932d5193d91f5fe254426b"
+    },
+    "WORLD3.LZS": {
+      "length": 24082,
+      "sha256": "cebeafebd64fab9e68c91aa4a8c1f68e07fe0cec0fa7070ae5c35b65f655b0bc"
+    },
+    "WORLD4.LZS": {
+      "length": 31341,
+      "sha256": "fc125d221b6a713cbce24b9a4fe39bfff2cef564980080e8a981a7c93bb217c1"
+    },
+    "WORLD5.LZS": {
+      "length": 20047,
+      "sha256": "d64735b3565ece174976ff36f94b2d71cea2abf91be2bde35112f6e61d72f83a"
+    },
+    "WORLD6.LZS": {
+      "length": 18642,
+      "sha256": "f96b0ea6f2ddbedc2d4deeeb3b3cd24d457d55ad42a5b5a876d6d384a8410d59"
+    },
+    "WORLD7.LZS": {
+      "length": 29960,
+      "sha256": "1e66a77e5594ab114e285ce4414ed27228c7fa38a398d60cf46527a3baf75b63"
+    },
+    "WORLD8.LZS": {
+      "length": 14989,
+      "sha256": "696087230a90766d445c1d946bcc97980961595c837b792870e018c5ced234e2"
+    },
+    "WORLD9.LZS": {
+      "length": 21312,
+      "sha256": "3ea0c840e723fe097d92f84e3747007f662a21eb3ef6e0f532624fc1f9c63178"
+    }
+  }
+}

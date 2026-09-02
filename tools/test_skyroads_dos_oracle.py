@@ -4,20 +4,85 @@ import unittest
 from pathlib import Path
 
 from tools.skyroads_dos_oracle import (
+    MemoryWrite,
     PRESETS,
     ROAD0_LAUNCH_ADDKEY,
+    SHIPPED_RENDERER_ENTRY_ADDRESS,
     VGA_FRAME_DUMP_NAME,
+    VGA_PALETTE_DUMP_NAME,
     build_launch_plan,
     build_phase_file_trace,
     build_derived_dump_specs,
     build_dosbox_command,
     fixture_bundle_from_checkpoint,
+    gameplay_launch_auto_keys,
+    go_menu_navigation_keys,
     parse_file_trace,
+    parse_vga_dac_palette,
+    apply_memory_writes,
     sanitize_path_component,
+    set_gameplay_key_state,
 )
 
 
 class SkyroadsDosOracleTests(unittest.TestCase):
+    def test_vga_dac_palette_parser_recovers_all_rgb_components(self) -> None:
+        lines = ["LOG: VGA DAC palette (RGB):"]
+        expected = bytearray()
+        for row_index in range(0, 256, 8):
+            colors = []
+            for color_offset in range(8):
+                value = (row_index + color_offset) % 64
+                expected.extend((value, value + 1, value + 2))
+                separator = "-" if color_offset == 3 else " "
+                colors.append(f"{value:02x}{value + 1:02x}{value + 2:02x}{separator}")
+            lines.append(f"LOG: {row_index:02x}: " + "".join(colors))
+
+        palette = parse_vga_dac_palette("\n".join(lines))
+
+        self.assertEqual(palette, bytes(expected))
+
+    def test_gameplay_key_state_writes_pressed_bits_and_releases_other_keys(self) -> None:
+        class RecordingSession:
+            def __init__(self) -> None:
+                self.commands = []
+
+            def send_line(self, command: str) -> None:
+                self.commands.append(command)
+
+        session = RecordingSession()
+
+        set_gameplay_key_state(session, 0x0E92, ("up", "left", "space"))
+
+        self.assertEqual(
+            session.commands,
+            ["SM 0E92:0BA2 80 00 80 00 00 00 00 00 00 80"],
+        )
+
+    def test_memory_writes_resolve_the_requested_runtime_segment(self) -> None:
+        class RecordingSession:
+            def __init__(self) -> None:
+                self.commands = []
+
+            def send_line(self, command: str) -> None:
+                self.commands.append(command)
+
+        session = RecordingSession()
+        writes = (
+            MemoryWrite(offset=0x9628, data=bytes.fromhex("00 80 36 00")),
+            MemoryWrite(offset=0x044A, data=b"\x01\x02", segment_register="SS"),
+        )
+
+        apply_memory_writes(session, {"ds": 0x0E92, "ss": 0x1234}, writes)
+
+        self.assertEqual(
+            session.commands,
+            [
+                "SM 17F4:0008 00 80 36 00",
+                "SM 1278:000A 01 02",
+            ],
+        )
+
     def test_sanitize_path_component_keeps_fixture_paths_stable(self) -> None:
         self.assertEqual(sanitize_path_component(" frame 00 / renderer entry "), "frame-00-renderer-entry")
         self.assertEqual(sanitize_path_component(".."), "checkpoint")
@@ -33,11 +98,16 @@ class SkyroadsDosOracleTests(unittest.TestCase):
                 "name": "trekdat_segment_table",
                 "segments": [0x4000, 0x4001, 0x4ABC, 0x4003],
             },
+            {
+                "name": "ship_render_state",
+                "active_sprite_offset": 0x7620,
+                "active_sprite_segment": 0x567B,
+            },
         ]
 
         derived = build_derived_dump_specs(dump_results)
 
-        self.assertEqual(len(derived), 2)
+        self.assertEqual(len(derived), 3)
         self.assertEqual(derived[0].name, "active_road_window")
         self.assertEqual(derived[0].segment, "DS")
         self.assertEqual(derived[0].offset, "16C4")
@@ -46,38 +116,59 @@ class SkyroadsDosOracleTests(unittest.TestCase):
         self.assertEqual(derived[1].segment, "4ABC")
         self.assertEqual(derived[1].offset, "0000")
         self.assertEqual(derived[1].length, 0x0270)
+        self.assertEqual(derived[2].name, "active_ship_sprite")
+        self.assertEqual(derived[2].segment, "567B")
+        self.assertEqual(derived[2].offset, "7620")
+        self.assertEqual(derived[2].length, 29 * 24)
 
-    def test_fixture_bundle_promotes_vga_sha_to_frame_hash(self) -> None:
-        checkpoint = {
-            "checkpoint_name": "frame_00",
-            "breakpoint_name": "renderer_entry",
-            "hit_index": 1,
-            "registers": {"cs": 0x0824, "ip": 0x2D03, "ds": 0x1000, "ss": 0x2000},
-            "dumps": [
-                {
-                    "name": "renderer_state",
-                    "address": "1000:0E36",
-                    "length": 0x20,
-                    "sha256": "a" * 64,
-                    "current_row": 24,
-                    "road_row_group": 3,
-                    "trekdat_slot": 0,
-                },
-                {
-                    "name": VGA_FRAME_DUMP_NAME,
-                    "address": "A000:0000",
-                    "length": 320 * 200,
-                    "sha256": "b" * 64,
-                    "width": 320,
-                    "height": 200,
-                    "row_stride": 320,
-                },
-            ],
-        }
-
+    def test_fixture_bundle_copies_raw_vga_frame_and_palette(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            capture_root = temp_root / "capture"
+            capture_root.mkdir()
+            frame_path = capture_root / "vga_frame.bin"
+            palette_path = capture_root / "vga_palette_6bit.bin"
+            frame_path.write_bytes(bytes([7]) * (320 * 200))
+            palette_path.write_bytes(bytes(range(64)) * 12)
+            checkpoint = {
+                "checkpoint_name": "frame_00",
+                "breakpoint_name": "renderer_entry",
+                "hit_index": 1,
+                "registers": {"cs": 0x0824, "ip": 0x2D03, "ds": 0x1000, "ss": 0x2000},
+                "dumps": [
+                    {
+                        "name": "renderer_state",
+                        "address": "1000:0E36",
+                        "length": 0x20,
+                        "sha256": "a" * 64,
+                        "current_row": 24,
+                        "road_row_group": 3,
+                        "trekdat_slot": 0,
+                    },
+                    {
+                        "name": VGA_FRAME_DUMP_NAME,
+                        "address": "A000:0000",
+                        "length": 320 * 200,
+                        "sha256": "b" * 64,
+                        "width": 320,
+                        "height": 200,
+                        "row_stride": 320,
+                        "path": str(frame_path),
+                    },
+                    {
+                        "name": VGA_PALETTE_DUMP_NAME,
+                        "address": "1000:5182",
+                        "length": 256 * 3,
+                        "sha256": "c" * 64,
+                        "entry_count": 256,
+                        "component_bits": 6,
+                        "encoding": "rgb",
+                        "path": str(palette_path),
+                    },
+                ],
+            }
             fixture = fixture_bundle_from_checkpoint(
-                Path(temp_dir),
+                temp_root / "fixtures",
                 "road0-initial-frame",
                 checkpoint,
             )
@@ -88,10 +179,20 @@ class SkyroadsDosOracleTests(unittest.TestCase):
             fixture_path = Path(fixture["fixture_path"])
             self.assertTrue(fixture_path.exists())
             payload = json.loads(fixture_path.read_text(encoding="ascii"))
-            self.assertEqual(payload["bundle_version"], 1)
+            self.assertEqual(payload["bundle_version"], 2)
             self.assertEqual(payload["preset"], "road0-initial-frame")
             self.assertEqual(payload["frame_sha256"], "b" * 64)
             self.assertEqual(payload["dumps"][1]["name"], VGA_FRAME_DUMP_NAME)
+            self.assertEqual(payload["frame_file"], "frame.indices")
+            self.assertEqual(payload["palette_file"], "palette.vga6")
+            self.assertEqual(
+                (fixture_path.parent / payload["frame_file"]).read_bytes(),
+                frame_path.read_bytes(),
+            )
+            self.assertEqual(
+                (fixture_path.parent / payload["palette_file"]).read_bytes(),
+                palette_path.read_bytes(),
+            )
 
     def test_build_dosbox_command_inserts_pre_launch_commands_before_game(self) -> None:
         command = build_dosbox_command(
@@ -134,6 +235,65 @@ class SkyroadsDosOracleTests(unittest.TestCase):
             ),
         )
 
+    def test_go_menu_navigation_reaches_dispatch_inventory_roads(self) -> None:
+        self.assertEqual(go_menu_navigation_keys(1), ())
+        self.assertEqual(go_menu_navigation_keys(5), ("down",) * 4)
+        self.assertEqual(go_menu_navigation_keys(9), ("down",) * 8)
+        self.assertEqual(
+            go_menu_navigation_keys(20),
+            ("right", "down", "down", "down", "down"),
+        )
+        self.assertEqual(
+            go_menu_navigation_keys(26),
+            ("right",) + ("down",) * 10,
+        )
+
+    def test_dispatch_preset_launches_select_the_requested_road(self) -> None:
+        road20 = PRESETS["road20-dispatch-kind1"]
+        road5 = PRESETS["road5-dispatch-kinds2-4"]
+        road9 = PRESETS["road9-dispatch-kind5"]
+        road26 = PRESETS["road26-dispatch-kind3"]
+
+        self.assertEqual(
+            road20.guest_launch_sequence,
+            type(road20.guest_launch_sequence)(gameplay_launch_auto_keys(20)),
+        )
+        self.assertEqual(
+            road5.guest_launch_sequence,
+            type(road5.guest_launch_sequence)(gameplay_launch_auto_keys(5)),
+        )
+        self.assertEqual(
+            road9.guest_launch_sequence,
+            type(road9.guest_launch_sequence)(gameplay_launch_auto_keys(9)),
+        )
+        self.assertEqual(
+            road26.guest_launch_sequence,
+            type(road26.guest_launch_sequence)(gameplay_launch_auto_keys(26)),
+        )
+        self.assertTrue(
+            all(len(preset.checkpoints[0].frame_bios_keys) == 8 for preset in (road20, road5, road9))
+        )
+        self.assertEqual(len(road26.checkpoints[0].frame_bios_keys), 64)
+        self.assertTrue(
+            all(keys == ("up",) for keys in road26.checkpoints[0].frame_bios_keys)
+        )
+        self.assertEqual(
+            road20.guest_launch_sequence.shell_commands()[-1],
+            "ADDKEY p15750 right down down down down enter",
+        )
+        self.assertEqual(
+            road5.guest_launch_sequence.shell_commands()[-1],
+            "ADDKEY p15750 down down down down enter",
+        )
+        self.assertEqual(
+            road9.guest_launch_sequence.shell_commands()[-1],
+            "ADDKEY p15750 down down down down down down down down enter",
+        )
+        self.assertEqual(
+            road26.guest_launch_sequence.shell_commands()[-1],
+            "ADDKEY p15750 right down down down down down down down down down down enter",
+        )
+
     def test_guest_addkey_launch_plan_skips_stages_for_gameplay_presets(self) -> None:
         plan = build_launch_plan(
             PRESETS["road0-initial-frame"],
@@ -147,6 +307,12 @@ class SkyroadsDosOracleTests(unittest.TestCase):
         self.assertEqual(plan.bios_keys, ())
         self.assertEqual(plan.stages, ())
         self.assertEqual(plan.pre_launch_commands[-1], "ADDKEY p15750 enter")
+
+    def test_gameplay_breakpoint_is_installed_before_exe_startup(self) -> None:
+        breakpoint = PRESETS["road0-initial-frame"].breakpoints[0]
+
+        self.assertEqual(breakpoint.address, SHIPPED_RENDERER_ENTRY_ADDRESS)
+        self.assertEqual(breakpoint.image_offset, 0x2D03)
 
     def test_gameplay_scenario_presets_encode_expected_frame_inputs(self) -> None:
         neutral = PRESETS["road0-steady-neutral"].checkpoints[0]
@@ -162,9 +328,55 @@ class SkyroadsDosOracleTests(unittest.TestCase):
         self.assertTrue(all(keys == ("up",) for keys in throttle.frame_bios_keys))
         self.assertTrue(all(keys == ("up", "left") for keys in left.frame_bios_keys))
         self.assertTrue(all(keys == ("up", "right") for keys in right.frame_bios_keys))
-        self.assertEqual(len(airborne.frame_bios_keys), 9)
+        self.assertEqual(len(airborne.frame_bios_keys), 10)
         self.assertTrue(all(keys == ("up",) for keys in airborne.frame_bios_keys[:8]))
         self.assertEqual(airborne.frame_bios_keys[8], ("up", "space"))
+        self.assertEqual(airborne.frame_bios_keys[9], ("up",))
+        self.assertEqual(
+            len(PRESETS["road1-shadow-variant3"].checkpoints[0].frame_bios_keys),
+            11,
+        )
+        self.assertEqual(
+            len(PRESETS["road1-shadow-variant4"].checkpoints[0].frame_bios_keys),
+            12,
+        )
+        self.assertEqual(
+            len(PRESETS["road26-shadow-variant2"].checkpoints[0].frame_bios_keys),
+            11,
+        )
+        self.assertEqual(
+            PRESETS["road26-shadow-variant2"]
+            .checkpoints[0]
+            .framebuffer_speed_visible_count,
+            1,
+        )
+        self.assertTrue(
+            any(
+                dump.name == "sprite_cycle_counter"
+                and dump.debugger_address() == "DS:160C"
+                for dump in PRESETS["road0-steady-neutral"].dumps
+            )
+        )
+
+        terminal_scan = PRESETS["road2-terminal-scan"]
+        self.assertEqual(len(terminal_scan.checkpoints), 21)
+        self.assertEqual(len(terminal_scan.checkpoints[0].frame_bios_keys), 30)
+        self.assertTrue(
+            all(
+                checkpoint.frame_bios_keys == (("up",),)
+                for checkpoint in terminal_scan.checkpoints[1:]
+            )
+        )
+        explosion_scan = PRESETS["road30-explosion-scan"]
+        self.assertEqual(len(explosion_scan.checkpoints), 26)
+        self.assertEqual(len(explosion_scan.checkpoints[0].frame_bios_keys), 40)
+        self.assertTrue(
+            any(
+                dump.name == "dashboard_speed_visible_count"
+                and dump.debugger_address() == "DS:41CA"
+                for dump in PRESETS["road0-steady-neutral"].dumps
+            )
+        )
 
     def test_post_confirm_vrt_scan_preset_uses_vrt_checkpoints_without_breakpoints(self) -> None:
         preset = PRESETS["road0-post-confirm-vrt-scan"]

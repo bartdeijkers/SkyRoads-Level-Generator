@@ -9,3 +9,7 @@ path = "src/lib.rs"
 [dependencies]
 skyroads-core = { path = "../skyroads-core" }
 skyroads-data = { path = "../skyroads-data" }
+
+[dev-dependencies]
+serde_json = "1"
+sha2 = "0.10"

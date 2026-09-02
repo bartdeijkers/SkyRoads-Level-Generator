@@ -5,7 +5,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process;
 
-use skyroads_core::{AppInput, AttractModeApp, GameplaySession, RenderScene, ShipState};
+use skyroads_core::{
+    AppInput, AttractModeApp, GameplaySession, GoMenuSelection, RenderScene, ShipState,
+};
 use skyroads_data::{
     level_from_road_entry, load_demo_rec_path, load_muzax_lzs_path, load_roads_lzs_path,
     load_trekdat_lzs_path, shipped_runtime_tables, DemoRecording, Error, Level, Result,
@@ -56,6 +58,14 @@ fn run() -> Result<()> {
             };
             render_compare(Path::new(&left_capture_root), Path::new(right_capture_root))
         }
+        (Some("oracle-compare"), Some(fixture_root)) => {
+            let options = parse_oracle_compare_options(&extra).unwrap_or_else(|message| {
+                eprintln!("{message}");
+                print_usage(&program);
+                process::exit(2);
+            });
+            oracle_compare(Path::new(&fixture_root), &options)
+        }
         _ => {
             print_usage(&program);
             process::exit(2);
@@ -65,7 +75,7 @@ fn run() -> Result<()> {
 
 fn print_usage(program: &str) {
     eprintln!(
-        "usage: {program} <summary|demo-sim|render-capture|render-demo|render-compare> <path> [args]"
+        "usage: {program} <summary|demo-sim|render-capture|render-demo|render-compare|oracle-compare> <path> [args]"
     );
     eprintln!("  {program} summary <source_root>");
     eprintln!("  {program} demo-sim <source_root> [frame_count]");
@@ -76,6 +86,9 @@ fn print_usage(program: &str) {
         "  {program} render-demo <source_root> <output_root> [--x265-video <video_path>] [--video-fps <fps>]"
     );
     eprintln!("  {program} render-compare <left_capture_root> <right_capture_root>");
+    eprintln!(
+        "  {program} oracle-compare <fixture_dir> <native_frame.indices> [--native-palette <native_palette.vga6>] [--diff <diff.ppm>]"
+    );
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,6 +101,50 @@ struct RenderOutputOptions {
 struct X265VideoOptions {
     output_path: PathBuf,
     fps: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OracleCompareOptions {
+    native_frame_path: PathBuf,
+    native_palette_path: Option<PathBuf>,
+    diff_path: Option<PathBuf>,
+}
+
+fn parse_oracle_compare_options(
+    extra: &[String],
+) -> std::result::Result<OracleCompareOptions, String> {
+    let Some(native_frame_path) = extra.first() else {
+        return Err("oracle-compare requires <native_frame.indices>".to_string());
+    };
+
+    let mut native_palette_path = None;
+    let mut diff_path = None;
+    let mut index = 1usize;
+    while index < extra.len() {
+        let flag = &extra[index];
+        let Some(value) = extra.get(index + 1) else {
+            return Err(format!("{flag} requires a path"));
+        };
+        match flag.as_str() {
+            "--native-palette" if native_palette_path.is_none() => {
+                native_palette_path = Some(PathBuf::from(value));
+            }
+            "--diff" if diff_path.is_none() => {
+                diff_path = Some(PathBuf::from(value));
+            }
+            "--native-palette" | "--diff" => {
+                return Err(format!("{flag} can only be provided once"));
+            }
+            _ => return Err(format!("unknown oracle-compare argument: {flag}")),
+        }
+        index += 2;
+    }
+
+    Ok(OracleCompareOptions {
+        native_frame_path: PathBuf::from(native_frame_path),
+        native_palette_path,
+        diff_path,
+    })
 }
 
 fn parse_render_output_options(
@@ -194,6 +251,12 @@ fn summary(source_root: &Path) -> Result<()> {
             "  dispatch_kind_{}: count={} descriptors={}",
             entry.dispatch_kind, entry.count, entry.descriptor_count
         );
+        if let Some(sample) = entry.earliest_playable_sample {
+            println!(
+                "    earliest_playable: road={} row={} column={} raw=0x{:04X}",
+                sample.road_index, sample.row_index, sample.column_index, sample.raw
+            );
+        }
     }
     println!();
 
@@ -417,11 +480,13 @@ fn render_demo(source_root: &Path, options: &RenderOutputOptions) -> Result<()> 
     capture_play_scene(
         &options.output_root,
         &renderer,
-        "demo/frame_000000".to_string(),
-        "demo",
-        0,
-        RenderScene::DemoPlayback(initial_scene.clone()),
-        &initial_scene,
+        CaptureFrameRequest {
+            label: "demo/frame_000000".to_string(),
+            scenario: "demo",
+            capture_index: 0,
+            render_scene: RenderScene::DemoPlayback(initial_scene.clone()),
+            gameplay_scene: &initial_scene,
+        },
         &mut entries,
     )?;
 
@@ -431,11 +496,13 @@ fn render_demo(source_root: &Path, options: &RenderOutputOptions) -> Result<()> 
         capture_play_scene(
             &options.output_root,
             &renderer,
-            label,
-            "demo",
-            capture_index,
-            RenderScene::DemoPlayback(scene.clone()),
-            &scene,
+            CaptureFrameRequest {
+                label,
+                scenario: "demo",
+                capture_index,
+                render_scene: RenderScene::DemoPlayback(scene.clone()),
+                gameplay_scene: &scene,
+            },
             &mut entries,
         )?;
     }
@@ -518,16 +585,22 @@ enum CaptureScenario {
     Left,
     Right,
     Jump,
+    DispatchRoad5,
+    DispatchRoad9,
+    DispatchRoad20,
 }
 
 impl CaptureScenario {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 9] = [
         Self::Start,
         Self::Neutral,
         Self::Throttle,
         Self::Left,
         Self::Right,
         Self::Jump,
+        Self::DispatchRoad5,
+        Self::DispatchRoad9,
+        Self::DispatchRoad20,
     ];
 
     fn name(self) -> &'static str {
@@ -538,22 +611,40 @@ impl CaptureScenario {
             Self::Left => "left",
             Self::Right => "right",
             Self::Jump => "jump",
+            Self::DispatchRoad5 => "dispatch_road5",
+            Self::DispatchRoad9 => "dispatch_road9",
+            Self::DispatchRoad20 => "dispatch_road20",
+        }
+    }
+
+    fn road_index(self) -> usize {
+        match self {
+            Self::DispatchRoad5 => 5,
+            Self::DispatchRoad9 => 9,
+            Self::DispatchRoad20 => 20,
+            _ => 1,
         }
     }
 
     fn frame_count(self) -> usize {
         match self {
             Self::Start => 1,
-            Self::Neutral => 8,
-            Self::Throttle => 24,
-            Self::Left | Self::Right => 24,
+            Self::Neutral | Self::DispatchRoad5 | Self::DispatchRoad9 | Self::DispatchRoad20 => 8,
+            // The DOS renderer is not called once per physics update. The
+            // 24-hit oracle checkpoint contains 28 gameplay updates.
+            Self::Throttle => 28,
+            Self::Left | Self::Right => 28,
             Self::Jump => 24,
         }
     }
 
     fn gameplay_input(self, capture_index: usize) -> AppInput {
         match self {
-            Self::Start | Self::Neutral => AppInput::default(),
+            Self::Start
+            | Self::Neutral
+            | Self::DispatchRoad5
+            | Self::DispatchRoad9
+            | Self::DispatchRoad20 => AppInput::default(),
             Self::Throttle => AppInput {
                 up_held: true,
                 ..AppInput::default()
@@ -590,16 +681,18 @@ struct CaptureEntry {
     ship_state: ShipState,
     frame_hash: u64,
     ppm_path: String,
+    indices_path: String,
+    palette_path: String,
 }
 
 impl CaptureEntry {
     fn manifest_header() -> &'static str {
-        "label\tscenario\tcapture_index\tgameplay_frame_index\troad_row\tship_x\tship_y\tship_z\tship_state\tframe_hash\tppm_path"
+        "label\tscenario\tcapture_index\tgameplay_frame_index\troad_row\tship_x\tship_y\tship_z\tship_state\tframe_hash\tppm_path\tindices_path\tpalette_path"
     }
 
     fn to_manifest_row(&self) -> String {
         format!(
-            "{}\t{}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{}\t{}\t{}\t{}\t{}",
             self.label,
             self.scenario,
             self.capture_index,
@@ -611,14 +704,16 @@ impl CaptureEntry {
             ship_state_name(self.ship_state),
             format_hash(self.frame_hash),
             self.ppm_path,
+            self.indices_path,
+            self.palette_path,
         )
     }
 
     fn from_manifest_row(line: &str) -> Result<Self> {
         let columns = line.split('\t').collect::<Vec<_>>();
-        if columns.len() != 11 {
+        if columns.len() != 11 && columns.len() != 13 {
             return Err(Error::invalid_format(format!(
-                "capture manifest row should have 11 columns, got {}",
+                "capture manifest row should have 11 or 13 columns, got {}",
                 columns.len()
             )));
         }
@@ -635,6 +730,8 @@ impl CaptureEntry {
             ship_state: parse_ship_state(columns[8])?,
             frame_hash: parse_hash(columns[9])?,
             ppm_path: columns[10].to_string(),
+            indices_path: columns.get(11).copied().unwrap_or_default().to_string(),
+            palette_path: columns.get(12).copied().unwrap_or_default().to_string(),
         })
     }
 }
@@ -666,18 +763,20 @@ fn capture_scenario(
     fs::create_dir_all(&scenario_root)?;
 
     let mut app = make_app(levels, demo);
-    let initial_scene = enter_gameplay(&mut app)?;
+    let initial_scene = enter_gameplay_road(&mut app, scenario.road_index())?;
 
     if scenario == CaptureScenario::Start {
         let label = format!("{}/frame_{:03}", scenario.name(), 0);
         capture_play_scene(
             output_root,
             renderer,
-            label,
-            scenario.name(),
-            0,
-            RenderScene::Gameplay(initial_scene.clone()),
-            &initial_scene,
+            CaptureFrameRequest {
+                label,
+                scenario: scenario.name(),
+                capture_index: 0,
+                render_scene: RenderScene::Gameplay(initial_scene.clone()),
+                gameplay_scene: &initial_scene,
+            },
             entries,
         )?;
         return Ok(());
@@ -694,11 +793,13 @@ fn capture_scenario(
         capture_play_scene(
             output_root,
             renderer,
-            label,
-            scenario.name(),
-            capture_index,
-            RenderScene::Gameplay(scene.clone()),
-            &scene,
+            CaptureFrameRequest {
+                label,
+                scenario: scenario.name(),
+                capture_index,
+                render_scene: RenderScene::Gameplay(scene.clone()),
+                gameplay_scene: &scene,
+            },
             entries,
         )?;
     }
@@ -706,32 +807,49 @@ fn capture_scenario(
     Ok(())
 }
 
+struct CaptureFrameRequest<'a> {
+    label: String,
+    scenario: &'a str,
+    capture_index: usize,
+    render_scene: RenderScene,
+    gameplay_scene: &'a skyroads_core::DemoPlaybackState,
+}
+
 fn capture_play_scene(
     output_root: &Path,
     renderer: &ReferenceRenderer,
-    label: String,
-    scenario: &str,
-    capture_index: usize,
-    render_scene: RenderScene,
-    scene: &skyroads_core::DemoPlaybackState,
+    request: CaptureFrameRequest<'_>,
     entries: &mut Vec<CaptureEntry>,
 ) -> Result<()> {
+    let CaptureFrameRequest {
+        label,
+        scenario,
+        capture_index,
+        render_scene,
+        gameplay_scene,
+    } = request;
     let ppm_path = format!("{label}.ppm");
+    let indices_path = format!("{label}.indices");
+    let palette_path = format!("{label}.vga6");
     let frame = renderer.render_scene(&render_scene);
     write_frame_ppm(&output_root.join(&ppm_path), &frame)?;
+    write_indexed_frame(&output_root.join(&indices_path), &frame)?;
+    write_vga_palette(&output_root.join(&palette_path), &frame)?;
 
     entries.push(CaptureEntry {
         label,
         scenario: scenario.to_string(),
         capture_index,
-        gameplay_frame_index: scene.frame_index,
-        road_row: scene.current_row,
-        ship_x: scene.ship.x_position,
-        ship_y: scene.ship.y_position,
-        ship_z: scene.ship.z_position,
-        ship_state: scene.ship.state,
+        gameplay_frame_index: gameplay_scene.frame_index,
+        road_row: gameplay_scene.current_row,
+        ship_x: gameplay_scene.ship.x_position,
+        ship_y: gameplay_scene.ship.y_position,
+        ship_z: gameplay_scene.ship.z_position,
+        ship_state: gameplay_scene.ship.state,
         frame_hash: frame_hash(&frame),
         ppm_path,
+        indices_path,
+        palette_path,
     });
 
     Ok(())
@@ -965,18 +1083,43 @@ fn open_go_menu(app: &mut AttractModeApp) -> Result<()> {
     Ok(())
 }
 
-fn enter_gameplay(app: &mut AttractModeApp) -> Result<skyroads_core::DemoPlaybackState> {
+fn enter_gameplay_road(
+    app: &mut AttractModeApp,
+    road_index: usize,
+) -> Result<skyroads_core::DemoPlaybackState> {
     skip_intro_to_menu(app);
     open_go_menu(app)?;
+
+    let selection = GoMenuSelection::from_road_index(road_index);
+    for _ in 0..selection.world_column() {
+        app.tick(AppInput {
+            right: true,
+            ..AppInput::default()
+        });
+    }
+    let down_count = selection.world_row() * 3 + selection.road_index_in_world;
+    for _ in 0..down_count {
+        app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
+    }
+
     let tick = app.tick(AppInput {
         enter: true,
         ..AppInput::default()
     });
     let RenderScene::Gameplay(scene) = tick.render_scene else {
-        return Err(Error::invalid_format(
-            "expected gameplay render scene after entering gameplay",
-        ));
+        return Err(Error::invalid_format(format!(
+            "expected gameplay render scene after selecting road {road_index}"
+        )));
     };
+    if scene.world_index != selection.world_index {
+        return Err(Error::invalid_format(format!(
+            "road {road_index} launched world {}, expected {}",
+            scene.world_index, selection.world_index
+        )));
+    }
     Ok(scene)
 }
 
@@ -988,8 +1131,220 @@ fn write_frame_ppm(path: &Path, frame: &FrameBuffer320x200) -> Result<()> {
     let mut output =
         Vec::with_capacity(32 + usize::from(frame.width) * usize::from(frame.height) * 3);
     output.extend_from_slice(format!("P6\n{} {}\n255\n", frame.width, frame.height).as_bytes());
-    for pixel in frame.pixels_rgba.chunks_exact(4) {
+    let pixels_rgba = frame.to_rgba();
+    for pixel in pixels_rgba.chunks_exact(4) {
         output.extend_from_slice(&pixel[..3]);
+    }
+    fs::write(path, output)?;
+    Ok(())
+}
+
+fn write_indexed_frame(path: &Path, frame: &FrameBuffer320x200) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, &frame.pixels_indexed)?;
+    Ok(())
+}
+
+fn write_vga_palette(path: &Path, frame: &FrameBuffer320x200) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut output = Vec::with_capacity(256 * 3);
+    for color in frame.palette.colors() {
+        output.extend_from_slice(&[color.r / 4, color.g / 4, color.b / 4]);
+    }
+    fs::write(path, output)?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IndexedFrameDifference {
+    mismatch_count: usize,
+    bounds: Option<(usize, usize, usize, usize)>,
+    first_mismatches: Vec<(usize, usize, u8, u8)>,
+}
+
+fn compare_indexed_frames(reference: &[u8], native: &[u8]) -> Result<IndexedFrameDifference> {
+    const FRAME_WIDTH: usize = 320;
+    const FRAME_HEIGHT: usize = 200;
+    const FRAME_BYTES: usize = FRAME_WIDTH * FRAME_HEIGHT;
+
+    if reference.len() != FRAME_BYTES || native.len() != FRAME_BYTES {
+        return Err(Error::invalid_format(format!(
+            "indexed frames must each contain {FRAME_BYTES} bytes, got {} and {}",
+            reference.len(),
+            native.len()
+        )));
+    }
+
+    let mut mismatch_count = 0usize;
+    let mut first_mismatches = Vec::new();
+    let mut min_x = FRAME_WIDTH;
+    let mut min_y = FRAME_HEIGHT;
+    let mut max_x = 0usize;
+    let mut max_y = 0usize;
+
+    for (offset, (reference_index, native_index)) in reference.iter().zip(native.iter()).enumerate()
+    {
+        if reference_index == native_index {
+            continue;
+        }
+        let x = offset % FRAME_WIDTH;
+        let y = offset / FRAME_WIDTH;
+        mismatch_count += 1;
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+        if first_mismatches.len() < 16 {
+            first_mismatches.push((x, y, *reference_index, *native_index));
+        }
+    }
+
+    Ok(IndexedFrameDifference {
+        mismatch_count,
+        bounds: (mismatch_count != 0).then_some((min_x, min_y, max_x, max_y)),
+        first_mismatches,
+    })
+}
+
+fn oracle_compare(fixture_root: &Path, options: &OracleCompareOptions) -> Result<()> {
+    const PALETTE_BYTES: usize = 256 * 3;
+
+    let reference_frame_path = fixture_root.join("frame.indices");
+    let reference_palette_path = fixture_root.join("palette.vga6");
+    let native_palette_path = options
+        .native_palette_path
+        .clone()
+        .unwrap_or_else(|| options.native_frame_path.with_extension("vga6"));
+
+    let reference_frame = fs::read(&reference_frame_path)?;
+    let native_frame = fs::read(&options.native_frame_path)?;
+    let reference_palette = fs::read(&reference_palette_path)?;
+    let native_palette = fs::read(&native_palette_path)?;
+
+    if reference_palette.len() != PALETTE_BYTES || native_palette.len() != PALETTE_BYTES {
+        return Err(Error::invalid_format(format!(
+            "VGA palettes must each contain {PALETTE_BYTES} bytes, got {} and {}",
+            reference_palette.len(),
+            native_palette.len()
+        )));
+    }
+
+    let frame_difference = compare_indexed_frames(&reference_frame, &native_frame)?;
+    let palette_mismatch_count = reference_palette
+        .iter()
+        .zip(&native_palette)
+        .filter(|(reference, native)| reference != native)
+        .count();
+
+    if let Some(diff_path) = &options.diff_path {
+        write_oracle_diff_ppm(
+            diff_path,
+            &reference_frame,
+            &native_frame,
+            &reference_palette,
+        )?;
+    }
+
+    println!("SkyRoads DOS Oracle Comparison");
+    println!("fixture: {}", normalize_path(fixture_root));
+    println!(
+        "native_frame: {}",
+        normalize_path(&options.native_frame_path)
+    );
+    println!("native_palette: {}", normalize_path(&native_palette_path));
+    println!("pixel_mismatches: {}", frame_difference.mismatch_count);
+    println!("palette_component_mismatches: {palette_mismatch_count}");
+    for (name, start_y, end_y) in [
+        ("sky", 0usize, 24usize),
+        ("playfield", 24, 138),
+        ("dashboard", 138, 200),
+    ] {
+        let mismatch_count =
+            indexed_region_mismatch_count(&reference_frame, &native_frame, start_y, end_y);
+        println!("{name}_pixel_mismatches: {mismatch_count}");
+    }
+    if let Some((min_x, min_y, max_x, max_y)) = frame_difference.bounds {
+        println!("pixel_mismatch_bounds: {min_x},{min_y}..{max_x},{max_y}");
+    }
+    for (x, y, reference, native) in &frame_difference.first_mismatches {
+        println!("  pixel {x},{y}: DOS={reference} Rust={native}");
+    }
+    for ((reference, native), count) in
+        most_common_index_mismatches(&reference_frame, &native_frame, 8)
+    {
+        println!("  index pair DOS={reference} Rust={native}: {count} pixels");
+    }
+    if let Some(diff_path) = &options.diff_path {
+        println!("diff: {}", normalize_path(diff_path));
+    }
+
+    if frame_difference.mismatch_count != 0 || palette_mismatch_count != 0 {
+        return Err(Error::invalid_format(
+            "native indexed output differs from the DOS oracle fixture",
+        ));
+    }
+    Ok(())
+}
+
+fn indexed_region_mismatch_count(
+    reference: &[u8],
+    native: &[u8],
+    start_y: usize,
+    end_y: usize,
+) -> usize {
+    let start = start_y * 320;
+    let end = end_y * 320;
+    reference[start..end]
+        .iter()
+        .zip(&native[start..end])
+        .filter(|(reference_index, native_index)| reference_index != native_index)
+        .count()
+}
+
+fn most_common_index_mismatches(
+    reference: &[u8],
+    native: &[u8],
+    limit: usize,
+) -> Vec<((u8, u8), usize)> {
+    let mut counts = BTreeMap::<(u8, u8), usize>::new();
+    for (reference_index, native_index) in reference.iter().zip(native) {
+        if reference_index != native_index {
+            *counts.entry((*reference_index, *native_index)).or_default() += 1;
+        }
+    }
+    let mut counts = counts.into_iter().collect::<Vec<_>>();
+    counts.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    counts.truncate(limit);
+    counts
+}
+
+fn write_oracle_diff_ppm(
+    path: &Path,
+    reference_frame: &[u8],
+    native_frame: &[u8],
+    reference_palette: &[u8],
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut output = Vec::with_capacity(32 + 320 * 200 * 3);
+    output.extend_from_slice(b"P6\n320 200\n255\n");
+    for (reference_index, native_index) in reference_frame.iter().zip(native_frame) {
+        if reference_index != native_index {
+            output.extend_from_slice(&[255, 0, 255]);
+            continue;
+        }
+
+        let palette_offset = usize::from(*reference_index) * 3;
+        output.extend_from_slice(&[
+            reference_palette[palette_offset].saturating_mul(2),
+            reference_palette[palette_offset + 1].saturating_mul(2),
+            reference_palette[palette_offset + 2].saturating_mul(2),
+        ]);
     }
     fs::write(path, output)?;
     Ok(())
@@ -1102,9 +1457,9 @@ fn parse_hash(value: &str) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        compare_capture_entries, format_hash, parse_render_capture_options,
-        parse_render_demo_options, CaptureEntry, CaptureScenario, RenderOutputOptions, ShipState,
-        X265VideoOptions,
+        compare_capture_entries, compare_indexed_frames, format_hash, parse_oracle_compare_options,
+        parse_render_capture_options, parse_render_demo_options, CaptureEntry, CaptureScenario,
+        OracleCompareOptions, RenderOutputOptions, ShipState, X265VideoOptions,
     };
     use std::path::PathBuf;
 
@@ -1121,6 +1476,8 @@ mod tests {
             ship_state: ShipState::Alive,
             frame_hash: hash,
             ppm_path: format!("{label}.ppm"),
+            indices_path: format!("{label}.indices"),
+            palette_path: format!("{label}.vga6"),
         }
     }
 
@@ -1178,6 +1535,42 @@ mod tests {
                 }),
             }
         );
+    }
+
+    #[test]
+    fn oracle_compare_options_parse_native_palette_and_diff() {
+        let args = vec![
+            "/tmp/native.indices".to_string(),
+            "--native-palette".to_string(),
+            "/tmp/native.vga6".to_string(),
+            "--diff".to_string(),
+            "/tmp/diff.ppm".to_string(),
+        ];
+
+        let parsed = parse_oracle_compare_options(&args).unwrap();
+
+        assert_eq!(
+            parsed,
+            OracleCompareOptions {
+                native_frame_path: PathBuf::from("/tmp/native.indices"),
+                native_palette_path: Some(PathBuf::from("/tmp/native.vga6")),
+                diff_path: Some(PathBuf::from("/tmp/diff.ppm")),
+            }
+        );
+    }
+
+    #[test]
+    fn indexed_frame_comparison_reports_bounds_and_first_mismatch() {
+        let reference = vec![0u8; 320 * 200];
+        let mut native = reference.clone();
+        native[4 * 320 + 3] = 7;
+        native[9 * 320 + 11] = 8;
+
+        let difference = compare_indexed_frames(&reference, &native).unwrap();
+
+        assert_eq!(difference.mismatch_count, 2);
+        assert_eq!(difference.bounds, Some((3, 4, 11, 9)));
+        assert_eq!(difference.first_mismatches[0], (3, 4, 0, 7));
     }
 
     #[test]

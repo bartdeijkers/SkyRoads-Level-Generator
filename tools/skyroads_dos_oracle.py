@@ -11,9 +11,10 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -70,15 +71,35 @@ BIOS_KEYBOARD_HEAD_OFFSET = 0x001A
 BIOS_KEYBOARD_TAIL_OFFSET = 0x001C
 BIOS_KEYBOARD_BUFFER_OFFSET = 0x001E
 BIOS_KEYBOARD_BUFFER_CAPACITY = 16
+GAMEPLAY_KEY_STATE_OFFSET = 0x0BA2
+GAMEPLAY_KEY_STATE_BYTES = 10
+GAMEPLAY_KEY_STATE_INDEX = {
+    "up": 0,
+    "down": 1,
+    "left": 2,
+    "right": 3,
+    "space": 9,
+}
 ROAD_WINDOW_BASE_OFFSET = 0x1638
 ROAD_WINDOW_ROW_STRIDE = 0x0E
 ROAD_WINDOW_ACTIVE_OFFSET = 0x62
 TREKDAT_POINTER_GRID_BYTES = 0x0270
+VGA_RASTER_TABLE_OFFSET = 0x0312
+VGA_RASTER_TABLE_BYTES = 0x0410
 VGA_FRAME_DUMP_NAME = "vga_frame"
 VGA_FRAME_SEGMENT = "A000"
 VGA_FRAME_OFFSET = "0000"
 VGA_FRAME_BYTES = 320 * 200
-FIXTURE_BUNDLE_VERSION = 1
+VGA_PALETTE_DUMP_NAME = "vga_palette_6bit"
+GAMEPLAY_PALETTE_BUFFER_DUMP_NAME = "gameplay_palette_buffer_6bit"
+VGA_PALETTE_BYTES = 256 * 3
+VGA_DAC_HEADER = "LOG: VGA DAC palette (RGB):"
+VGA_DAC_FINAL_ROW = "LOG: f8:"
+VGA_DAC_ROW_RE = re.compile(r"LOG:\s*([0-9a-fA-F]{2}):\s*(.*)")
+VGA_DAC_COLOR_RE = re.compile(r"[0-9a-fA-F]{6}")
+ACTIVE_SHIP_SPRITE_BYTES = 29 * 24
+FIXTURE_BUNDLE_VERSION = 2
+SHIPPED_RENDERER_ENTRY_ADDRESS = "0824:2D03"
 DEFAULT_FIXTURE_ROOT = Path("fixtures/dos-gameplay-renderer")
 FILE_OPEN_RE = re.compile(r"LOG:\s+(\d+)\s+FILES:file open command (\d+) file (.+)")
 FILE_READ_RE = re.compile(r"LOG:\s+(\d+)\s+(?:DEBUG )?FILES:Reading (\d+) bytes from (.+)")
@@ -163,8 +184,12 @@ class AddKeySequence:
         elapsed_milliseconds = 0
         for event in self.events:
             button_name = addkey_button_name(event.key_name)
-            elapsed_milliseconds += max(0, round(event.delay_seconds * 1000))
-            commands.append(f"ADDKEY p{elapsed_milliseconds} {button_name}")
+            delay_milliseconds = max(0, round(event.delay_seconds * 1000))
+            elapsed_milliseconds += delay_milliseconds
+            if delay_milliseconds == 0 and commands:
+                commands[-1] += f" {button_name}"
+            else:
+                commands.append(f"ADDKEY p{elapsed_milliseconds} {button_name}")
         return tuple(commands)
 
 
@@ -187,6 +212,16 @@ class CheckpointSpec:
     frame_bios_keys: tuple[tuple[str, ...], ...] = ()
     capture_screen: bool = False
     timeout_seconds: float | None = None
+    framebuffer_speed_visible_count: int | None = None
+    memory_writes: tuple["MemoryWrite", ...] = ()
+
+
+@dataclass(frozen=True)
+class MemoryWrite:
+    offset: int
+    data: bytes
+    segment_register: str = "DS"
+    absolute_segment: int | None = None
 
 
 @dataclass(frozen=True)
@@ -219,18 +254,86 @@ ROAD0_MENU_LAUNCH_ADDKEY = AddKeySequence(ROAD0_MENU_LAUNCH_AUTO_KEYS)
 ROAD0_LAUNCH_ADDKEY = AddKeySequence(ROAD0_LAUNCH_AUTO_KEYS)
 
 
+def go_menu_navigation_keys(road_index: int) -> tuple[str, ...]:
+    if road_index < 1 or road_index > 30:
+        raise ValueError("playable road index must be between 1 and 30")
+
+    visible_index = road_index - 1
+    world_index, road_index_in_world = divmod(visible_index, 3)
+    world_column, world_row = divmod(world_index, 5)
+    down_count = world_row * 3 + road_index_in_world
+
+    navigation: list[str] = []
+    navigation.extend("right" for _ in range(world_column))
+    navigation.extend("down" for _ in range(down_count))
+    return tuple(navigation)
+
+
+def gameplay_launch_auto_keys(road_index: int) -> tuple[KeyEvent, ...]:
+    navigation = go_menu_navigation_keys(road_index)
+    if not navigation:
+        return ROAD0_LAUNCH_AUTO_KEYS
+
+    events = list(ROAD0_MENU_LAUNCH_AUTO_KEYS)
+    for index, key_name in enumerate(navigation):
+        delay_seconds = 6.0 if index == 0 else 0.0
+        events.append(KeyEvent(delay_seconds, key_name))
+    # Queue the complete navigation in one BIOS-buffer batch. Keeping the
+    # AUTOEXEC command count equal to the Road 1 launch also ensures the first
+    # debugger VRT cannot interrupt AUTOEXEC before SKYROADS.EXE starts.
+    events.append(KeyEvent(0.0, "return"))
+    return tuple(events)
+
+
 ROAD0_INITIAL_FRAME = OraclePreset(
     name="road0-initial-frame",
     description=(
         "Skip the intro, start Road 0, and capture the first gameplay-side hit of the "
         "main DOS road renderer at image offset 0x2D03."
     ),
-    breakpoints=(BreakpointSpec("renderer_entry", image_offset=0x2D03),),
+    # The controlled DOSBox-X launch used by this oracle consistently loads the
+    # shipped EXE at CS 0824. Installing the breakpoint before execution avoids
+    # racing startup while still retaining the image offset in fixture metadata.
+    breakpoints=(
+        BreakpointSpec(
+            "renderer_entry",
+            address=SHIPPED_RENDERER_ENTRY_ADDRESS,
+            image_offset=0x2D03,
+        ),
+    ),
     dumps=(
         DumpSpec("renderer_state", "DS", "0E36", 0x20),
+        DumpSpec("ship_render_state", "DS", "0E34", 0x10),
+        DumpSpec("gameplay_motion_state", "DS", "95F8", 0x40),
+        DumpSpec("gameplay_key_state", "DS", "0BA2", GAMEPLAY_KEY_STATE_BYTES),
+        DumpSpec("sprite_cycle_counter", "DS", "160C", 0x02),
+        DumpSpec("dashboard_speed_velocity", "DS", "54B8", 0x04),
+        DumpSpec("jump_master_velocity_delta", "DS", "AF3E", 0x04),
+        DumpSpec("dashboard_speed_visible_count", "DS", "41CA", 0x02),
+        DumpSpec("dashboard_lift_visible_count", "DS", "456A", 0x02),
+        DumpSpec("ship_lifecycle_state", "DS", "4576", 0x08),
+        DumpSpec("gameplay_lifecycle_state", "DS", "4566", 0x18),
+        DumpSpec("ship_z_position", "DS", "9628", 0x04),
+        DumpSpec("ship_xy_state", "DS", "AF2C", 0x20),
+        DumpSpec("ship_fuel_remaining", "DS", "54A0", 0x02),
+        DumpSpec("ship_oxygen_remaining", "DS", "B14C", 0x02),
+        DumpSpec("active_road_length", "DS", "41CE", 0x02),
+        DumpSpec("ship_clip_mask", "SS", "0E92", 29 * 33),
         DumpSpec("tile_class_by_low3", "DS", "0B77", 0x08),
         DumpSpec("draw_dispatch_by_type", "SS", "0B7F", 0x20),
         DumpSpec("trekdat_segment_table", "SS", "0E82", 0x10),
+        DumpSpec(
+            "vga_raster_tables",
+            "SS",
+            f"{VGA_RASTER_TABLE_OFFSET:04X}",
+            VGA_RASTER_TABLE_BYTES,
+        ),
+        DumpSpec(
+            GAMEPLAY_PALETTE_BUFFER_DUMP_NAME,
+            "DS",
+            "5182",
+            VGA_PALETTE_BYTES,
+        ),
     ),
     bios_keys=(
         "space",
@@ -284,20 +387,25 @@ def make_named_vrt_checkpoints(
     return tuple(checkpoints)
 
 
-def road0_gameplay_scenario_preset(
+def gameplay_scenario_preset(
     name: str,
     description: str,
     checkpoint_name: str,
     frame_bios_keys: tuple[tuple[str, ...], ...],
+    *,
+    road_index: int = 1,
+    extra_dumps: tuple[DumpSpec, ...] = (),
+    framebuffer_speed_visible_count: int | None = None,
 ) -> OraclePreset:
+    launch_auto_keys = gameplay_launch_auto_keys(road_index)
     return OraclePreset(
         name=name,
         description=description,
         breakpoints=ROAD0_INITIAL_FRAME.breakpoints,
-        dumps=ROAD0_INITIAL_FRAME.dumps,
+        dumps=ROAD0_INITIAL_FRAME.dumps + extra_dumps,
         bios_keys=ROAD0_INITIAL_FRAME.bios_keys,
-        guest_launch_sequence=ROAD0_INITIAL_FRAME.guest_launch_sequence,
-        auto_keys=ROAD0_INITIAL_FRAME.auto_keys,
+        guest_launch_sequence=AddKeySequence(launch_auto_keys),
+        auto_keys=launch_auto_keys,
         warmup_vrt_count=ROAD0_INITIAL_FRAME.warmup_vrt_count,
         stages=ROAD0_INITIAL_FRAME.stages,
         checkpoints=(
@@ -305,6 +413,7 @@ def road0_gameplay_scenario_preset(
                 name=checkpoint_name,
                 resume_command="f5",
                 frame_bios_keys=frame_bios_keys,
+                framebuffer_speed_visible_count=framebuffer_speed_visible_count,
             ),
         ),
     )
@@ -339,7 +448,7 @@ def gomenu_vrt_scan_preset(
     )
 
 
-ROAD0_STEADY_NEUTRAL = road0_gameplay_scenario_preset(
+ROAD0_STEADY_NEUTRAL = gameplay_scenario_preset(
     name="road0-steady-neutral",
     description=(
         "Start Road 0, advance eight gameplay renderer hits with no gameplay input, "
@@ -347,10 +456,16 @@ ROAD0_STEADY_NEUTRAL = road0_gameplay_scenario_preset(
     ),
     checkpoint_name="steady-neutral",
     frame_bios_keys=repeat_frame_bios_keys((), 8),
+    # This far pointer was recovered from the steady-neutral ship state. Keep
+    # the fixed-address dump scoped to that checkpoint: moving ship frames use
+    # another sprite address.
+    extra_dumps=(
+        DumpSpec("active_ship_sprite", "567B", "78F0", 29 * 24),
+    ),
 )
 
 
-ROAD0_SUSTAINED_THROTTLE = road0_gameplay_scenario_preset(
+ROAD0_SUSTAINED_THROTTLE = gameplay_scenario_preset(
     name="road0-sustained-throttle",
     description=(
         "Start Road 0, inject throttle for twenty-four gameplay frames, and capture "
@@ -361,7 +476,7 @@ ROAD0_SUSTAINED_THROTTLE = road0_gameplay_scenario_preset(
 )
 
 
-ROAD0_STEADY_LEFT = road0_gameplay_scenario_preset(
+ROAD0_STEADY_LEFT = gameplay_scenario_preset(
     name="road0-steady-left",
     description=(
         "Start Road 0, inject throttle plus left steering for twenty-four gameplay "
@@ -372,7 +487,7 @@ ROAD0_STEADY_LEFT = road0_gameplay_scenario_preset(
 )
 
 
-ROAD0_STEADY_RIGHT = road0_gameplay_scenario_preset(
+ROAD0_STEADY_RIGHT = gameplay_scenario_preset(
     name="road0-steady-right",
     description=(
         "Start Road 0, inject throttle plus right steering for twenty-four gameplay "
@@ -383,17 +498,236 @@ ROAD0_STEADY_RIGHT = road0_gameplay_scenario_preset(
 )
 
 
-ROAD0_FIRST_AIRBORNE = road0_gameplay_scenario_preset(
+ROAD0_FIRST_AIRBORNE = gameplay_scenario_preset(
     name="road0-first-airborne",
     description=(
         "Start Road 0, inject eight throttle frames and then the first throttle-plus-jump "
-        "frame, and capture the first airborne checkpoint."
+        "frame, advance once more, and capture the first framebuffer that shows the ship "
+        "airborne."
     ),
     checkpoint_name="first-airborne",
     frame_bios_keys=concat_frame_bios_keys(
         repeat_frame_bios_keys(("up",), 8),
         repeat_frame_bios_keys(("up", "space"), 1),
+        repeat_frame_bios_keys(("up",), 1),
     ),
+)
+
+ROAD1_SHADOW_VARIANT3 = gameplay_scenario_preset(
+    name="road1-shadow-variant3",
+    description=(
+        "Start Road 1, jump, and capture the next airborne height whose DOS "
+        "shadow-height lookup selects mask variant 3."
+    ),
+    checkpoint_name="shadow-variant3",
+    frame_bios_keys=concat_frame_bios_keys(
+        repeat_frame_bios_keys(("up",), 8),
+        repeat_frame_bios_keys(("up", "space"), 1),
+        repeat_frame_bios_keys(("up",), 2),
+    ),
+)
+
+ROAD1_SHADOW_VARIANT4 = gameplay_scenario_preset(
+    name="road1-shadow-variant4",
+    description=(
+        "Start Road 1, jump, and capture the following airborne height whose "
+        "DOS shadow-height lookup selects mask variant 4."
+    ),
+    checkpoint_name="shadow-variant4",
+    frame_bios_keys=concat_frame_bios_keys(
+        repeat_frame_bios_keys(("up",), 8),
+        repeat_frame_bios_keys(("up", "space"), 1),
+        repeat_frame_bios_keys(("up",), 3),
+    ),
+)
+
+ROAD26_SHADOW_VARIANT2 = gameplay_scenario_preset(
+    name="road26-shadow-variant2",
+    description=(
+        "Start lower-gravity Road 26, jump, and capture the intermediate "
+        "airborne height whose DOS shadow-height lookup selects mask variant 2."
+    ),
+    checkpoint_name="shadow-variant2",
+    road_index=26,
+    frame_bios_keys=concat_frame_bios_keys(
+        repeat_frame_bios_keys(("up",), 8),
+        repeat_frame_bios_keys(("up", "space"), 1),
+        repeat_frame_bios_keys(("up",), 2),
+    ),
+    # DS:41CA is the exact visible-count latch used to reconstruct this gauge.
+    framebuffer_speed_visible_count=1,
+)
+
+ROAD2_TERMINAL_SCAN = OraclePreset(
+    name="road2-terminal-scan",
+    description=(
+        "Start Road 2, hold throttle into its first centerline gap, and capture "
+        "the fresh fall plus the following terminal animation frames."
+    ),
+    breakpoints=ROAD0_INITIAL_FRAME.breakpoints,
+    dumps=ROAD0_INITIAL_FRAME.dumps,
+    bios_keys=ROAD0_INITIAL_FRAME.bios_keys,
+    guest_launch_sequence=AddKeySequence(gameplay_launch_auto_keys(2)),
+    auto_keys=gameplay_launch_auto_keys(2),
+    warmup_vrt_count=ROAD0_INITIAL_FRAME.warmup_vrt_count,
+    stages=ROAD0_INITIAL_FRAME.stages,
+    checkpoints=(
+        CheckpointSpec(
+            name="terminal-scan-30",
+            resume_command="f5",
+            frame_bios_keys=repeat_frame_bios_keys(("up",), 30),
+        ),
+        *tuple(
+            CheckpointSpec(
+                name=f"terminal-scan-{frame_index:02d}",
+                resume_command="f5",
+                frame_bios_keys=(("up",),),
+            )
+            for frame_index in range(31, 51)
+        ),
+    ),
+)
+
+ROAD30_EXPLOSION_SCAN = OraclePreset(
+    name="road30-explosion-scan",
+    description=(
+        "Start Road 30, hold throttle into its first centerline lethal obstacle, "
+        "and capture the fresh explosion plus its sprite progression."
+    ),
+    breakpoints=ROAD0_INITIAL_FRAME.breakpoints,
+    dumps=ROAD0_INITIAL_FRAME.dumps,
+    bios_keys=ROAD0_INITIAL_FRAME.bios_keys,
+    guest_launch_sequence=AddKeySequence(gameplay_launch_auto_keys(30)),
+    auto_keys=gameplay_launch_auto_keys(30),
+    warmup_vrt_count=ROAD0_INITIAL_FRAME.warmup_vrt_count,
+    stages=ROAD0_INITIAL_FRAME.stages,
+    checkpoints=(
+        CheckpointSpec(
+            name="explosion-scan-40",
+            resume_command="f5",
+            frame_bios_keys=repeat_frame_bios_keys(("up",), 40),
+        ),
+        *tuple(
+            CheckpointSpec(
+                name=f"explosion-scan-{frame_index:02d}",
+                resume_command="f5",
+                frame_bios_keys=(("up",),),
+            )
+            for frame_index in range(41, 66)
+        ),
+    ),
+)
+
+ROAD0_OUT_OF_OXYGEN = OraclePreset(
+    name="road0-out-of-oxygen",
+    description=(
+        "Start Road 0, set the remaining oxygen to one DOS unit at the first "
+        "renderer checkpoint, then capture the fresh terminal frame and the "
+        "last animated frame before the 108-update game-over freeze."
+    ),
+    breakpoints=ROAD0_INITIAL_FRAME.breakpoints,
+    dumps=ROAD0_INITIAL_FRAME.dumps,
+    bios_keys=ROAD0_INITIAL_FRAME.bios_keys,
+    guest_launch_sequence=AddKeySequence(gameplay_launch_auto_keys(1)),
+    auto_keys=gameplay_launch_auto_keys(1),
+    warmup_vrt_count=ROAD0_INITIAL_FRAME.warmup_vrt_count,
+    stages=ROAD0_INITIAL_FRAME.stages,
+    checkpoints=(
+        CheckpointSpec(
+            name="renderer-warmup",
+            resume_command="f5",
+            frame_bios_keys=repeat_frame_bios_keys((), 8),
+        ),
+        CheckpointSpec(
+            name="fresh-out-of-oxygen",
+            resume_command="f5",
+            frame_bios_keys=((),),
+            memory_writes=(
+                MemoryWrite(offset=0xB14C, data=b"\x01\x00"),
+            ),
+        ),
+        CheckpointSpec(
+            name="delayed-game-over",
+            resume_command="f5",
+            frame_bios_keys=repeat_frame_bios_keys((), 96),
+        ),
+    ),
+)
+
+ROAD1_TUNNEL_EXIT_WIN = gameplay_scenario_preset(
+    name="road1-tunnel-exit-win",
+    description=(
+        "Start Road 1 and set the DOS 16.16 Z position to 53.0, immediately "
+        "before its final tunnel row, then capture the next fully presented "
+        "renderer frame with the tunnel exit in the live window."
+    ),
+    checkpoint_name="tunnel-exit-win",
+    road_index=1,
+    frame_bios_keys=(),
+)
+ROAD1_TUNNEL_EXIT_WIN = replace(
+    ROAD1_TUNNEL_EXIT_WIN,
+    checkpoints=(
+        CheckpointSpec(
+            name="renderer-warmup",
+            resume_command="f5",
+            frame_bios_keys=repeat_frame_bios_keys((), 8),
+        ),
+        replace(
+            ROAD1_TUNNEL_EXIT_WIN.checkpoints[0],
+            frame_bios_keys=((), ()),
+            memory_writes=(
+                MemoryWrite(
+                    offset=0x9628,
+                    data=bytes.fromhex("00 00 35 00"),
+                ),
+            ),
+        ),
+    ),
+)
+
+DISPATCH_KIND1_ROAD20 = gameplay_scenario_preset(
+    name="road20-dispatch-kind1",
+    description=(
+        "Start playable Road 20, whose opening center cell is the earliest playable "
+        "dispatch-kind-1 descriptor, then capture a stable neutral frame."
+    ),
+    checkpoint_name="dispatch-kind1",
+    road_index=20,
+    frame_bios_keys=repeat_frame_bios_keys((), 8),
+)
+
+DISPATCH_KINDS2_4_ROAD5 = gameplay_scenario_preset(
+    name="road5-dispatch-kinds2-4",
+    description=(
+        "Start playable Road 5, whose opening rows contain the earliest playable "
+        "dispatch-kind-2 and dispatch-kind-4 descriptors, then capture a stable neutral frame."
+    ),
+    checkpoint_name="dispatch-kinds2-4",
+    road_index=5,
+    frame_bios_keys=repeat_frame_bios_keys((), 8),
+)
+
+DISPATCH_KIND5_ROAD9 = gameplay_scenario_preset(
+    name="road9-dispatch-kind5",
+    description=(
+        "Start playable Road 9, whose row 7 edge cells are the earliest playable "
+        "dispatch-kind-5 descriptors, then capture a stable neutral frame."
+    ),
+    checkpoint_name="dispatch-kind5",
+    road_index=9,
+    frame_bios_keys=repeat_frame_bios_keys((), 8),
+)
+
+DISPATCH_KIND3_ROAD26 = gameplay_scenario_preset(
+    name="road26-dispatch-kind3",
+    description=(
+        "Start playable Road 26, hold throttle until its row-12 center obstacle "
+        "enters the live render window, and capture dispatch kind 3."
+    ),
+    checkpoint_name="dispatch-kind3",
+    road_index=26,
+    frame_bios_keys=repeat_frame_bios_keys(("up",), 64),
 )
 
 GOMENU_DEFAULT_SELECTION = gomenu_vrt_scan_preset(
@@ -447,6 +781,10 @@ PRESETS = {
         breakpoints=ROAD0_INITIAL_FRAME.breakpoints,
         dumps=ROAD0_INITIAL_FRAME.dumps,
         bios_keys=ROAD0_INITIAL_FRAME.bios_keys,
+        # Use the same reliable guest ADDKEY launch as road0-initial-frame. Without
+        # it this preset fell back to the host-key (powershell) backend, which does
+        # not drive the DOSBox-X window under WSL, so it captured zero checkpoints.
+        guest_launch_sequence=ROAD0_INITIAL_FRAME.guest_launch_sequence,
         auto_keys=ROAD0_INITIAL_FRAME.auto_keys,
         warmup_vrt_count=ROAD0_INITIAL_FRAME.warmup_vrt_count,
         stages=ROAD0_INITIAL_FRAME.stages,
@@ -484,6 +822,17 @@ PRESETS = {
     ROAD0_STEADY_LEFT.name: ROAD0_STEADY_LEFT,
     ROAD0_STEADY_RIGHT.name: ROAD0_STEADY_RIGHT,
     ROAD0_FIRST_AIRBORNE.name: ROAD0_FIRST_AIRBORNE,
+    ROAD1_SHADOW_VARIANT3.name: ROAD1_SHADOW_VARIANT3,
+    ROAD1_SHADOW_VARIANT4.name: ROAD1_SHADOW_VARIANT4,
+    ROAD26_SHADOW_VARIANT2.name: ROAD26_SHADOW_VARIANT2,
+    ROAD2_TERMINAL_SCAN.name: ROAD2_TERMINAL_SCAN,
+    ROAD30_EXPLOSION_SCAN.name: ROAD30_EXPLOSION_SCAN,
+    ROAD0_OUT_OF_OXYGEN.name: ROAD0_OUT_OF_OXYGEN,
+    ROAD1_TUNNEL_EXIT_WIN.name: ROAD1_TUNNEL_EXIT_WIN,
+    DISPATCH_KIND1_ROAD20.name: DISPATCH_KIND1_ROAD20,
+    DISPATCH_KINDS2_4_ROAD5.name: DISPATCH_KINDS2_4_ROAD5,
+    DISPATCH_KIND5_ROAD9.name: DISPATCH_KIND5_ROAD9,
+    DISPATCH_KIND3_ROAD26.name: DISPATCH_KIND3_ROAD26,
 }
 
 
@@ -1031,6 +1380,23 @@ def derived_trekdat_pointer_grid_dump(
     )
 
 
+def derived_active_ship_sprite_dump(
+    ship_render_state_dump: dict[str, Any],
+) -> DumpSpec | None:
+    segment = ship_render_state_dump.get("active_sprite_segment")
+    offset = ship_render_state_dump.get("active_sprite_offset")
+    if not isinstance(segment, int) or not isinstance(offset, int):
+        return None
+    if segment == 0:
+        return None
+    return DumpSpec(
+        "active_ship_sprite",
+        f"{segment:04X}",
+        f"{offset:04X}",
+        ACTIVE_SHIP_SPRITE_BYTES,
+    )
+
+
 def build_derived_dump_specs(dump_results: list[dict[str, Any]]) -> list[DumpSpec]:
     dumps_by_name = {dump["name"]: dump for dump in dump_results}
     renderer_state_dump = dumps_by_name.get("renderer_state")
@@ -1051,6 +1417,12 @@ def build_derived_dump_specs(dump_results: list[dict[str, Any]]) -> list[DumpSpe
         if trekdat_dump is not None:
             derived_specs.append(trekdat_dump)
 
+    ship_render_state_dump = dumps_by_name.get("ship_render_state")
+    if isinstance(ship_render_state_dump, dict):
+        ship_sprite_dump = derived_active_ship_sprite_dump(ship_render_state_dump)
+        if ship_sprite_dump is not None:
+            derived_specs.append(ship_sprite_dump)
+
     return derived_specs
 
 
@@ -1069,6 +1441,27 @@ def interpret_dump(dump: DumpSpec, data: bytes) -> dict[str, Any]:
             int.from_bytes(data[index : index + 2], "little")
             for index in range(0, min(len(data), 16), 2)
         ]
+    elif dump.name == "ship_render_state" and len(data) >= 10:
+        result["active_sprite_offset"] = int.from_bytes(data[6:8], "little")
+        result["active_sprite_segment"] = int.from_bytes(data[8:10], "little")
+    elif dump.name == "ship_lifecycle_state" and len(data) == 8:
+        words = [int.from_bytes(data[index : index + 2], "little") for index in range(0, 8, 2)]
+        result["raw_words"] = words
+        result["explosion_timer"] = words[1]
+        result["state_code"] = words[3]
+    elif dump.name == "gameplay_lifecycle_state" and len(data) == 0x18:
+        result["raw_words"] = [
+            int.from_bytes(data[index : index + 2], "little")
+            for index in range(0, len(data), 2)
+        ]
+    elif dump.name in (
+        "sprite_cycle_counter",
+        "dashboard_speed_visible_count",
+        "dashboard_lift_visible_count",
+    ) and len(data) == 2:
+        result["value"] = int.from_bytes(data, "little")
+    elif dump.name in ("dashboard_speed_velocity", "jump_master_velocity_delta") and len(data) == 4:
+        result["value"] = int.from_bytes(data, "little", signed=True)
     elif dump.name == "tile_class_by_low3":
         result["values"] = list(data)
     elif dump.name == "draw_dispatch_by_type":
@@ -1099,6 +1492,11 @@ def interpret_dump(dump: DumpSpec, data: bytes) -> dict[str, Any]:
         result["width"] = 320
         result["height"] = 200
         result["row_stride"] = 320
+        result["encoding"] = "indexed-vga"
+    elif dump.name in (VGA_PALETTE_DUMP_NAME, GAMEPLAY_PALETTE_BUFFER_DUMP_NAME):
+        result["entry_count"] = 256
+        result["component_bits"] = 6
+        result["encoding"] = "rgb"
     return result
 
 
@@ -1326,6 +1724,61 @@ def capture_dump_file(
     return result
 
 
+def parse_vga_dac_palette(log_text: str) -> bytes:
+    header_index = log_text.rfind(VGA_DAC_HEADER)
+    if header_index < 0:
+        raise ValueError("missing VGA DAC palette header in debugger output")
+
+    rows: dict[int, list[int]] = {}
+    for line in log_text[header_index:].splitlines():
+        match = VGA_DAC_ROW_RE.search(line)
+        if match is None:
+            continue
+        row_index = int(match.group(1), 16)
+        colors = VGA_DAC_COLOR_RE.findall(match.group(2))
+        if len(colors) != 8:
+            continue
+        rows[row_index] = [
+            int(component, 16)
+            for color in colors
+            for component in (color[0:2], color[2:4], color[4:6])
+        ]
+
+    expected_rows = list(range(0, 256, 8))
+    if sorted(rows) != expected_rows:
+        missing_rows = [f"{row:02x}" for row in expected_rows if row not in rows]
+        raise ValueError(
+            "incomplete VGA DAC palette output; missing rows: " + ", ".join(missing_rows)
+        )
+
+    palette = bytes(component for row in expected_rows for component in rows[row])
+    if len(palette) != VGA_PALETTE_BYTES:
+        raise ValueError(f"VGA DAC palette has unexpected length {len(palette)}")
+    return palette
+
+
+def capture_vga_dac_palette(
+    session: DosboxDebuggerSession,
+    checkpoint_dir: Path,
+) -> dict[str, Any]:
+    previous_length = len(session.read_log())
+    session.send_line("VGA DACPAL")
+    log_text = session.wait_for_substring(VGA_DAC_FINAL_ROW, previous_length, 5.0)
+    raw = parse_vga_dac_palette(log_text[previous_length:])
+    target_path = checkpoint_dir / f"{VGA_PALETTE_DUMP_NAME}.bin"
+    target_path.write_bytes(raw)
+    return {
+        "name": VGA_PALETTE_DUMP_NAME,
+        "address": "VGA:DAC",
+        "length": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "path": str(target_path),
+        "entry_count": 256,
+        "component_bits": 6,
+        "encoding": "rgb",
+    }
+
+
 def capture_screenshot(checkpoint_dir: Path, checkpoint_name: str) -> str:
     backend = detect_screenshot_backend()
     if backend != "macos":
@@ -1420,6 +1873,79 @@ def preload_bios_keyboard_buffer(session: DosboxDebuggerSession, key_names: tupl
     )
 
 
+def set_gameplay_key_state(
+    session: DosboxDebuggerSession,
+    data_segment: int,
+    key_names: tuple[str, ...],
+) -> None:
+    key_state = [0] * GAMEPLAY_KEY_STATE_BYTES
+    for key_name in key_names:
+        try:
+            key_index = GAMEPLAY_KEY_STATE_INDEX[key_name]
+        except KeyError as exc:
+            raise ValueError(f"unsupported gameplay key name {key_name!r}") from exc
+        key_state[key_index] = 0x80
+
+    session.send_line(
+        f"SM {data_segment:04X}:{GAMEPLAY_KEY_STATE_OFFSET:04X} "
+        + " ".join(f"{value:02X}" for value in key_state)
+    )
+
+
+def apply_memory_writes(
+    session: DosboxDebuggerSession,
+    registers: dict[str, int],
+    writes: tuple[MemoryWrite, ...],
+) -> None:
+    for write in writes:
+        register_name = write.segment_register.lower()
+        if write.absolute_segment is None and register_name not in registers:
+            raise ValueError(
+                f"unsupported debugger segment register {write.segment_register!r}"
+            )
+        if not write.data:
+            raise ValueError("debugger memory writes must contain at least one byte")
+        base_segment = (
+            write.absolute_segment
+            if write.absolute_segment is not None
+            else registers[register_name]
+        )
+        normalized_segment = base_segment + (write.offset >> 4)
+        normalized_offset = write.offset & 0x0F
+        session.send_line(
+            f"SM {normalized_segment:04X}:{normalized_offset:04X} "
+            + " ".join(f"{value:02X}" for value in write.data)
+        )
+
+
+def wait_for_debugger_commands(
+    session: DosboxDebuggerSession,
+    timeout_seconds: float,
+) -> int:
+    """Let debugger commands finish before F5 is sent.
+
+    DOSBox-X redraws its debugger prompt in place, so a command does not always
+    append another literal prompt marker to the PTY log. Waiting for the output
+    stream to settle avoids treating a write-command redraw as the breakpoint
+    reached by the following F5.
+    """
+
+    deadline = time.monotonic() + min(timeout_seconds, 5.0)
+    previous_length = -1
+    stable_polls = 0
+    while time.monotonic() < deadline:
+        current_length = len(session.read_log())
+        if current_length == previous_length:
+            stable_polls += 1
+            if stable_polls >= 3:
+                return session.prompt_count()
+        else:
+            previous_length = current_length
+            stable_polls = 0
+        time.sleep(0.1)
+    raise TimeoutError("timed out waiting for DOSBox-X debugger commands to settle")
+
+
 def capture_checkpoint(
     session: DosboxDebuggerSession,
     output_root: Path,
@@ -1427,6 +1953,7 @@ def capture_checkpoint(
     hit_index: int,
     breakpoints: list[BreakpointSpec],
     dumps: list[DumpSpec],
+    capture_vga_palette: bool,
     capture_screen_enabled: bool,
     notes: list[str],
 ) -> dict[str, Any]:
@@ -1437,6 +1964,8 @@ def capture_checkpoint(
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     dump_results = [capture_dump_file(session, dump, checkpoint_dir) for dump in dumps]
+    if capture_vga_palette:
+        dump_results.append(capture_vga_dac_palette(session, checkpoint_dir))
     derived_specs = build_derived_dump_specs(dump_results)
     existing_names = {dump["name"] for dump in dump_results}
     for derived_dump in derived_specs:
@@ -1470,12 +1999,15 @@ def fixture_bundle_from_checkpoint(
     fixture_root: Path,
     preset_name: str,
     checkpoint: dict[str, Any],
+    source_root: Path | None = None,
 ) -> dict[str, Any]:
     checkpoint_name = sanitize_path_component(str(checkpoint["checkpoint_name"]))
     fixture_dir = fixture_root / sanitize_path_component(preset_name) / checkpoint_name
     fixture_dir.mkdir(parents=True, exist_ok=True)
 
     frame_sha256 = None
+    frame_file = None
+    palette_file = None
     dumps = []
     for dump in checkpoint["dumps"]:
         fixture_dump = {
@@ -1486,12 +2018,32 @@ def fixture_bundle_from_checkpoint(
         }
         if dump["name"] == VGA_FRAME_DUMP_NAME:
             frame_sha256 = dump["sha256"]
+        raw_path = dump.get("path")
+        if raw_path is not None:
+            source_path = Path(raw_path)
+            if not source_path.is_file():
+                raise FileNotFoundError(f"captured dump is missing: {source_path}")
+
+            if dump["name"] == VGA_FRAME_DUMP_NAME:
+                relative_path = Path("frame.indices")
+                frame_file = relative_path.as_posix()
+            elif dump["name"] == VGA_PALETTE_DUMP_NAME:
+                relative_path = Path("palette.vga6")
+                palette_file = relative_path.as_posix()
+            else:
+                relative_path = Path("dumps") / f"{sanitize_path_component(dump['name'])}.bin"
+
+            destination = fixture_dir / relative_path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source_path, destination)
+            fixture_dump["file"] = relative_path.as_posix()
         for key in (
             "current_row",
             "road_row_group",
             "trekdat_slot",
             "raw_words",
             "values",
+            "value",
             "targets",
             "segments",
             "byte_values",
@@ -1502,10 +2054,58 @@ def fixture_bundle_from_checkpoint(
             "width",
             "height",
             "row_stride",
+            "active_sprite_offset",
+            "active_sprite_segment",
+            "entry_count",
+            "component_bits",
+            "encoding",
         ):
             if key in dump:
                 fixture_dump[key] = dump[key]
         dumps.append(fixture_dump)
+
+    framebuffer_context = dict(checkpoint.get("framebuffer_context", {}))
+    speed_gauge_state = next(
+        (
+            dump
+            for dump in checkpoint["dumps"]
+            if dump["name"] == "dashboard_speed_visible_count"
+        ),
+        None,
+    )
+    if speed_gauge_state is not None:
+        visible_count = speed_gauge_state.get("value")
+        if isinstance(visible_count, int):
+            framebuffer_context.setdefault("speed_gauge_visible_count", visible_count)
+
+    lift_indicator_state = next(
+        (
+            dump
+            for dump in checkpoint["dumps"]
+            if dump["name"] == "dashboard_lift_visible_count"
+        ),
+        None,
+    )
+    if lift_indicator_state is not None:
+        visible_count = lift_indicator_state.get("value")
+        if isinstance(visible_count, int):
+            framebuffer_context.setdefault("lift_indicator_visible_count", visible_count)
+
+    ship_render_state = next(
+        (dump for dump in checkpoint["dumps"] if dump["name"] == "ship_render_state"),
+        None,
+    )
+    if ship_render_state is not None:
+        sprite_offset = ship_render_state.get("active_sprite_offset")
+        first_ship_sprite_offset = 0x7350
+        ship_sprite_stride = 29 * 24 + 24
+        if (
+            isinstance(sprite_offset, int)
+            and sprite_offset >= first_ship_sprite_offset
+            and (sprite_offset - first_ship_sprite_offset) % ship_sprite_stride == 0
+        ):
+            sprite_index = (sprite_offset - first_ship_sprite_offset) // ship_sprite_stride
+            framebuffer_context.setdefault("ship_sprite_phase", sprite_index % 3)
 
     fixture = {
         "bundle_version": FIXTURE_BUNDLE_VERSION,
@@ -1515,8 +2115,13 @@ def fixture_bundle_from_checkpoint(
         "hit_index": checkpoint["hit_index"],
         "registers": checkpoint["registers"],
         "frame_sha256": frame_sha256,
+        "frame_file": frame_file,
+        "palette_file": palette_file,
+        "source_files": source_file_fingerprints(source_root) if source_root is not None else {},
         "dumps": dumps,
     }
+    if framebuffer_context:
+        fixture["framebuffer_context"] = framebuffer_context
     fixture_path = fixture_dir / "fixture.json"
     fixture_path.write_text(json.dumps(fixture, indent=2, sort_keys=True) + "\n", encoding="ascii")
     return {
@@ -1530,12 +2135,27 @@ def write_fixture_bundles(
     fixture_root: Path,
     preset_name: str,
     checkpoints: list[dict[str, Any]],
+    source_root: Path,
 ) -> list[dict[str, Any]]:
     fixture_root.mkdir(parents=True, exist_ok=True)
     return [
-        fixture_bundle_from_checkpoint(fixture_root, preset_name, checkpoint)
+        fixture_bundle_from_checkpoint(fixture_root, preset_name, checkpoint, source_root)
         for checkpoint in checkpoints
     ]
+
+
+def source_file_fingerprints(source_root: Path) -> dict[str, dict[str, Any]]:
+    authoritative_suffixes = {".EXE", ".LZS", ".DAT", ".REC", ".SND"}
+    fingerprints: dict[str, dict[str, Any]] = {}
+    for path in sorted(source_root.iterdir(), key=lambda candidate: candidate.name.upper()):
+        if not path.is_file() or path.suffix.upper() not in authoritative_suffixes:
+            continue
+        raw = path.read_bytes()
+        fingerprints[path.name.upper()] = {
+            "length": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+        }
+    return fingerprints
 
 
 def main() -> int:
@@ -1550,7 +2170,16 @@ def main() -> int:
         default=default_dosbox_path(),
         help="Path to the DOSBox-X binary.",
     )
-    parser.add_argument("--time-limit", type=int, default=30, help="DOSBox-X run time limit in seconds.")
+    parser.add_argument(
+        "--time-limit",
+        type=int,
+        default=120,
+        help=(
+            "DOSBox-X run time limit in seconds. The renderer presets schedule menu-launch "
+            "keys out to ~16s and then need extra time to reach the road, so the previous 30s "
+            "default expired before the renderer breakpoint could hit under WSL+DOSBox-X."
+        ),
+    )
     parser.add_argument(
         "--cycles",
         default="max",
@@ -1559,13 +2188,13 @@ def main() -> int:
     parser.add_argument(
         "--checkpoint-timeout",
         type=float,
-        default=15.0,
+        default=60.0,
         help="Seconds to wait for each breakpoint hit after resuming execution.",
     )
     parser.add_argument(
         "--startup-timeout",
         type=float,
-        default=15.0,
+        default=30.0,
         help="Seconds to wait for the initial DOSBox-X debugger prompt.",
     )
     parser.add_argument(
@@ -1649,8 +2278,47 @@ def main() -> int:
             f"{DEFAULT_FIXTURE_ROOT} under --source."
         ),
     )
+    parser.add_argument(
+        "--max-attempts",
+        type=int,
+        default=3,
+        help=(
+            "How many times to relaunch DOSBox-X if a capture run reaches no checkpoint. "
+            "The renderer presets drive the menu with wall-clock-timed keys that occasionally "
+            "race variable emulator startup speed, so a single run is only ~75%% reliable. "
+            "Set to 1 to disable retries."
+        ),
+    )
     args = parser.parse_args()
+    return run_capture_with_retries(args)
 
+
+def run_capture_with_retries(args: argparse.Namespace) -> int:
+    attempts = max(1, args.max_attempts)
+    exit_code = 1
+    for attempt in range(1, attempts + 1):
+        exit_code = run_capture(args)
+        if capture_reached_checkpoint(args.output.resolve()) and exit_code == 0:
+            return 0
+        if attempt < attempts:
+            print(
+                f"oracle: capture attempt {attempt}/{attempts} reached no checkpoint; relaunching DOSBox-X.",
+                file=sys.stderr,
+            )
+    return exit_code
+
+
+def capture_reached_checkpoint(output_root: Path) -> bool:
+    summary_path = output_root / "summary.json"
+    try:
+        summary = json.loads(summary_path.read_text(encoding="ascii"))
+    except (OSError, ValueError):
+        return False
+    checkpoints = summary.get("checkpoints")
+    return isinstance(checkpoints, list) and len(checkpoints) > 0
+
+
+def run_capture(args: argparse.Namespace) -> int:
     source_root = args.source.resolve()
     output_root = args.output.resolve()
     dosbox = args.dosbox.resolve()
@@ -1835,15 +2503,43 @@ def main() -> int:
             active_phase_name = checkpoint_spec.name or str(hit_index)
             active_phase_kind = "checkpoint"
             timeout_seconds = checkpoint_spec.timeout_seconds or args.checkpoint_timeout
+            if checkpoint_spec.memory_writes:
+                current_registers = capture_register_snapshot(session)
+                apply_memory_writes(
+                    session,
+                    current_registers,
+                    checkpoint_spec.memory_writes,
+                )
+                # EV is an ordered debugger barrier: its response cannot appear
+                # until every preceding SM command has been applied.
+                capture_register_snapshot(session)
+                prompt_count = wait_for_debugger_commands(
+                    session,
+                    timeout_seconds,
+                )
+                notes.append(
+                    f"Applied {len(checkpoint_spec.memory_writes)} debugger memory write(s) "
+                    f"for checkpoint `{checkpoint_spec.name or hit_index}`."
+                )
             if checkpoint_spec.frame_bios_keys:
                 for frame_index, frame_bios_keys in enumerate(checkpoint_spec.frame_bios_keys, start=1):
-                    if frame_bios_keys:
-                        preload_bios_keyboard_buffer(session, frame_bios_keys)
-                        notes.append(
-                            f"Preloaded the BIOS keyboard buffer for checkpoint "
-                            f"`{checkpoint_spec.name or hit_index}` frame step `{frame_index}` with: "
-                            + ", ".join(frame_bios_keys)
-                        )
+                    current_registers = capture_register_snapshot(session)
+                    set_gameplay_key_state(
+                        session,
+                        current_registers["ds"],
+                        frame_bios_keys,
+                    )
+                    capture_register_snapshot(session)
+                    prompt_count = wait_for_debugger_commands(
+                        session,
+                        timeout_seconds,
+                    )
+                    key_description = ", ".join(frame_bios_keys) or "none"
+                    notes.append(
+                        f"Set the DOS gameplay key-state table for checkpoint "
+                        f"`{checkpoint_spec.name or hit_index}` frame step `{frame_index}` to: "
+                        f"{key_description}"
+                    )
                     if checkpoint_spec.resume_command == "f5":
                         session.resume()
                     else:
@@ -1890,18 +2586,22 @@ def main() -> int:
                                 f"during checkpoint `{checkpoint_spec.name or hit_index}`."
                             )
 
-            checkpoints.append(
-                capture_checkpoint(
+            checkpoint = capture_checkpoint(
                     session,
                     output_root,
                     checkpoint_spec.name,
                     hit_index,
                     breakpoints,
                     dumps,
+                    args.capture_vga_frame,
                     args.capture_screen or checkpoint_spec.capture_screen,
                     notes,
                 )
-            )
+            if checkpoint_spec.framebuffer_speed_visible_count is not None:
+                checkpoint["framebuffer_context"] = {
+                    "speed_gauge_visible_count": checkpoint_spec.framebuffer_speed_visible_count
+                }
+            checkpoints.append(checkpoint)
             phase_markers.append(
                 make_phase_marker(
                     session,
@@ -1923,7 +2623,12 @@ def main() -> int:
                 if args.fixture_root is not None
                 else (source_root / DEFAULT_FIXTURE_ROOT).resolve()
             )
-            fixture_bundles = write_fixture_bundles(fixture_root, preset.name, checkpoints)
+            fixture_bundles = write_fixture_bundles(
+                fixture_root,
+                preset.name,
+                checkpoints,
+                source_root,
+            )
             notes.append(
                 f"Wrote {len(fixture_bundles)} normalized fixture bundle(s) under {fixture_root}."
             )

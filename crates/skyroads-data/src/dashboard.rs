@@ -10,6 +10,37 @@ pub const DASHBOARD_COLORS: [RgbColor; 3] = [
     RgbColor::new(113, 0, 101),
 ];
 
+pub const DOS_NUMBER_WIDTH: usize = 4;
+pub const DOS_NUMBER_HEIGHT: usize = 5;
+pub const DOS_NUMBER_FRAME_PIXELS: usize = DOS_NUMBER_WIDTH * DOS_NUMBER_HEIGHT;
+pub const DOS_NUMBER_PIXELS: [[u8; DOS_NUMBER_FRAME_PIXELS]; 10] = [
+    *b"\x00\x00\x00\x00\x00\x02\x02\x00\x00\x01\x01\x00\x00\x02\x02\x00\x00\x00\x00\x00",
+    *b"\x01\x01\x01\x00\x01\x02\x02\x00\x01\x01\x01\x00\x01\x02\x02\x00\x01\x01\x01\x00",
+    *b"\x00\x00\x00\x00\x01\x02\x02\x00\x00\x00\x00\x00\x00\x02\x02\x01\x00\x00\x00\x00",
+    *b"\x00\x00\x00\x00\x01\x02\x02\x00\x00\x00\x00\x00\x01\x02\x02\x00\x00\x00\x00\x00",
+    *b"\x00\x01\x01\x00\x00\x02\x02\x00\x00\x00\x00\x00\x01\x02\x02\x00\x01\x01\x01\x00",
+    *b"\x00\x00\x00\x00\x00\x02\x02\x01\x00\x00\x00\x00\x01\x02\x02\x00\x00\x00\x00\x00",
+    *b"\x00\x01\x01\x01\x00\x02\x02\x01\x00\x00\x00\x00\x00\x02\x02\x00\x00\x00\x00\x00",
+    *b"\x00\x00\x00\x00\x01\x02\x02\x00\x01\x01\x01\x00\x01\x02\x02\x00\x01\x01\x01\x00",
+    *b"\x00\x00\x00\x00\x00\x02\x02\x00\x00\x00\x00\x00\x00\x02\x02\x00\x00\x00\x00\x00",
+    *b"\x00\x00\x00\x00\x00\x02\x02\x00\x00\x00\x00\x00\x01\x02\x02\x00\x01\x01\x01\x00",
+];
+
+pub const DOS_JUMP_MASTER_WIDTH: usize = 26;
+pub const DOS_JUMP_MASTER_HEIGHT: usize = 5;
+pub const DOS_JUMP_MASTER_FRAME_PIXELS: usize = DOS_JUMP_MASTER_WIDTH * DOS_JUMP_MASTER_HEIGHT;
+pub const DOS_JUMP_MASTER_PIXELS: [u8; DOS_JUMP_MASTER_FRAME_PIXELS * 2] = [
+    5, 6, 5, 5, 5, 0, 6, 0, 0, 0, 5, 6, 0, 5, 5, 5, 6, 0, 0, 0, 0, 6, 5, 5, 5, 5, 5, 6, 5, 5, 5, 0,
+    6, 0, 6, 6, 0, 6, 0, 6, 6, 5, 6, 0, 6, 6, 5, 6, 5, 6, 6, 5, 5, 6, 5, 5, 5, 0, 6, 0, 5, 5, 0, 6,
+    0, 5, 5, 5, 6, 0, 0, 0, 5, 6, 5, 5, 5, 5, 5, 6, 5, 5, 5, 0, 6, 0, 6, 6, 0, 6, 0, 6, 6, 5, 6, 0,
+    6, 6, 5, 6, 5, 6, 6, 5, 5, 6, 5, 5, 5, 0, 6, 0, 0, 0, 5, 6, 0, 0, 0, 0, 6, 0, 0, 0, 0, 6, 5, 5,
+    5, 5, 0, 6, 0, 0, 0, 5, 6, 5, 5, 5, 5, 6, 0, 5, 5, 0, 6, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 6, 0, 6,
+    6, 0, 6, 5, 6, 6, 5, 6, 0, 6, 6, 0, 6, 0, 6, 6, 5, 6, 0, 6, 6, 5, 0, 6, 0, 5, 5, 0, 6, 5, 5, 5,
+    5, 6, 0, 5, 5, 0, 6, 0, 0, 0, 0, 6, 0, 0, 0, 5, 0, 6, 0, 6, 6, 0, 6, 5, 6, 6, 5, 6, 0, 6, 6, 0,
+    6, 5, 6, 6, 0, 6, 0, 6, 6, 5, 0, 6, 0, 5, 5, 0, 6, 5, 5, 5, 5, 6, 0, 0, 0, 0, 6, 0, 0, 0, 0, 6,
+    0, 0, 0, 0,
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HudFragment {
     pub position: u16,
@@ -100,7 +131,7 @@ fn read_u16(data: &[u8], offset: usize) -> Result<u16> {
 mod tests {
     use std::path::PathBuf;
 
-    use super::load_dashboard_dat_path;
+    use super::{load_dashboard_dat_path, DOS_JUMP_MASTER_PIXELS, DOS_NUMBER_PIXELS};
 
     fn repo_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -119,5 +150,23 @@ mod tests {
         let speed = load_dashboard_dat_path(repo_root().join("SPEED.DAT")).unwrap();
         assert_eq!(speed.header_words, 34);
         assert_eq!(speed.fragment_count(), 34);
+    }
+
+    #[test]
+    fn shipped_embedded_hud_pixels_match_bundled_executable() {
+        const NUMBER_FILE_OFFSET: usize = 0x6A1C;
+        const JUMP_MASTER_FILE_OFFSET: usize = 0x6AE4;
+
+        let executable = std::fs::read(repo_root().join("SKYROADS.EXE")).unwrap();
+        let number_pixels = DOS_NUMBER_PIXELS.concat();
+        assert_eq!(
+            &executable[NUMBER_FILE_OFFSET..NUMBER_FILE_OFFSET + number_pixels.len()],
+            number_pixels
+        );
+        assert_eq!(
+            &executable
+                [JUMP_MASTER_FILE_OFFSET..JUMP_MASTER_FILE_OFFSET + DOS_JUMP_MASTER_PIXELS.len()],
+            DOS_JUMP_MASTER_PIXELS
+        );
     }
 }
