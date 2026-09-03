@@ -4,8 +4,9 @@ use std::path::Path;
 use skyroads_core::{
     renderer_row_state, ControlMode, DemoPlaybackState, DirectionalActivation, DisplayMode,
     GoMenuScene, HelpMenuScene, InputSettingsCursor, InputSettingsScene, IntroSequenceState,
-    MainMenuScene, MenuCursor, RenderScene, RoadRenderRow, SettingsMenuCursor, SettingsMenuScene,
-    SteeringActivation, ThrottleActivation, VideoMode,
+    MainMenuScene, MenuCursor, ProceduralSetupCursor, ProceduralSetupScene, RenderScene,
+    RoadRenderRow, SettingsMenuCursor, SettingsMenuScene, SteeringActivation, ThrottleActivation,
+    VideoMode,
 };
 use skyroads_data::{
     gameplay_palettes, load_dashboard_dat_path, load_image_archive_path, load_trekdat_lzs_path,
@@ -116,6 +117,7 @@ const GO_MENU_SELECTION_OUTLINE: RgbColor = RgbColor::new(255, 255, 255);
 const MAIN_MENU_CENTER_X: i32 = 161;
 const MAIN_MENU_ART_Y_OFFSET: i32 = -8;
 const MAIN_MENU_QUIT_Y: i32 = 179;
+const MAIN_MENU_PROCEDURAL_Y: i32 = 158;
 const MAIN_MENU_TEXT: RgbColor = RgbColor::new(252, 252, 252);
 const MAIN_MENU_SELECTED_OUTLINE: RgbColor = RgbColor::new(236, 196, 0);
 
@@ -630,6 +632,7 @@ impl ReferenceRenderer {
             RenderScene::GoMenu(scene) => self.render_go_menu(&mut frame, scene),
             RenderScene::SettingsMenu(scene) => self.render_settings_menu(&mut frame, scene),
             RenderScene::InputSettings(scene) => self.render_input_settings(&mut frame, scene),
+            RenderScene::ProceduralSetup(scene) => self.render_procedural_setup(&mut frame, scene),
             RenderScene::DemoPlayback(scene) => {
                 self.render_play_scene_with_debug(&mut frame, scene, debug_view)
             }
@@ -649,11 +652,11 @@ impl ReferenceRenderer {
             RenderScene::MainMenu(_) => archive_vga_palette(&self.assets.intro),
             RenderScene::HelpMenu(_) => archive_vga_palette(&self.assets.help_menu),
             RenderScene::GoMenu(_) => archive_vga_palette(&self.assets.go_menu),
-            RenderScene::SettingsMenu(_) | RenderScene::InputSettings(_) => {
-                archive_vga_palette(&self.assets.settings_menu)
-            }
+            RenderScene::SettingsMenu(_)
+            | RenderScene::InputSettings(_)
+            | RenderScene::ProceduralSetup(_) => archive_vga_palette(&self.assets.settings_menu),
             RenderScene::DemoPlayback(scene) | RenderScene::Gameplay(scene) => {
-                self.gameplay_vga_palette(scene.road_index)
+                self.gameplay_vga_palette(scene.palette_index)
             }
         }
     }
@@ -701,18 +704,24 @@ impl ReferenceRenderer {
         self.draw_archive_frame(frame, &self.assets.intro, 0, 1.0, 1.0);
         self.draw_archive_frame(frame, &self.assets.intro, 1, 1.0, 1.0);
         self.draw_main_menu_art(frame, scene.selected);
+        self.draw_main_menu_small_label(
+            frame,
+            MAIN_MENU_PROCEDURAL_Y,
+            MenuCursor::Procedural.label(),
+            scene.selected == MenuCursor::Procedural,
+        );
         self.draw_main_menu_quit(frame, scene.selected == MenuCursor::Quit);
     }
 
     fn draw_main_menu_art(&self, frame: &mut FrameBuffer320x200, selected: MenuCursor) {
-        if selected == MenuCursor::Quit {
+        if selected.original_art_index().is_none() {
             if let Some(fragment) = &self.main_menu_unselected {
                 self.draw_main_menu_fragment(frame, fragment);
                 return;
             }
         }
 
-        let frame_index = selected.index().min(MenuCursor::Help.index());
+        let frame_index = selected.original_art_index().unwrap_or(0);
         if let Some(fragments) = self.assets.main_menu.frames.get(frame_index) {
             for fragment in fragments {
                 self.draw_main_menu_fragment(frame, fragment);
@@ -753,6 +762,25 @@ impl ReferenceRenderer {
         }
 
         self.draw_main_menu_text(frame, label_x, MAIN_MENU_QUIT_Y, label, MAIN_MENU_TEXT);
+    }
+
+    fn draw_main_menu_small_label(
+        &self,
+        frame: &mut FrameBuffer320x200,
+        y: i32,
+        label: &str,
+        selected: bool,
+    ) {
+        let color = if selected {
+            MAIN_MENU_SELECTED_OUTLINE
+        } else {
+            MAIN_MENU_TEXT
+        };
+        let x = FRAMEBUFFER_WIDTH as i32 / 2 - text_pixel_width(label, 2) / 2;
+        self.draw_text_with_shadow(frame, x, y, label, color, 2);
+        if selected {
+            frame.stroke_rect(x - 5, y - 4, text_pixel_width(label, 2) + 10, 18, color);
+        }
     }
 
     fn draw_main_menu_text(
@@ -916,6 +944,166 @@ impl ReferenceRenderer {
         );
     }
 
+    fn render_procedural_setup(
+        &self,
+        frame: &mut FrameBuffer320x200,
+        scene: &ProceduralSetupScene,
+    ) {
+        frame.clear(RgbColor::new(2, 4, 12));
+        self.draw_archive_frame(frame, &self.assets.settings_menu, 0, 1.0, 0.3);
+        frame.fill_rect(14, 10, 292, 180, INPUT_PANEL_BG);
+        frame.stroke_rect(14, 10, 292, 180, SETTINGS_SELECTED_ORANGE);
+
+        if scene.editing_id {
+            self.render_procedural_id_editor(frame, scene);
+            return;
+        }
+
+        self.draw_centered_text(frame, 21, "PROCEDURAL ROAD", SETTINGS_CURSOR_WHITE, 2);
+        self.draw_centered_text(
+            frame,
+            43,
+            &scene.generation_id.to_string(),
+            GO_MENU_SELECTION_COLOR,
+            1,
+        );
+
+        let rows = [
+            (ProceduralSetupCursor::Play, "PLAY ROAD".to_string()),
+            (ProceduralSetupCursor::NewRandom, "NEW RANDOM".to_string()),
+            (
+                ProceduralSetupCursor::Difficulty,
+                format!("DIFFICULTY {}", scene.difficulty.label()),
+            ),
+            (ProceduralSetupCursor::EnterId, "ENTER ID".to_string()),
+        ];
+        for (index, (cursor, label)) in rows.iter().enumerate() {
+            let top = 62 + index as i32 * 23;
+            let selected = scene.cursor == *cursor;
+            let color = if selected {
+                SETTINGS_SELECTED_ORANGE
+            } else {
+                SETTINGS_CURSOR_WHITE
+            };
+            if selected {
+                frame.fill_rect(35, top - 5, 250, 17, SETTINGS_WIDGET_BG);
+                frame.stroke_rect(35, top - 5, 250, 17, SETTINGS_WIDGET_OUTLINE);
+            }
+            self.draw_centered_text(frame, top, label, color, 2);
+        }
+
+        let theme = format!(
+            "WORLD {}  PALETTE {}",
+            scene.generation_id.world_index() + 1,
+            scene.generation_id.palette_index()
+        );
+        self.draw_centered_text(frame, 166, &theme, SETTINGS_WIDGET_TEXT_DIM, 1);
+        self.draw_centered_text(
+            frame,
+            178,
+            "ESC BACK   ENTER SELECT",
+            SETTINGS_WIDGET_TEXT_DIM,
+            1,
+        );
+    }
+
+    fn render_procedural_id_editor(
+        &self,
+        frame: &mut FrameBuffer320x200,
+        scene: &ProceduralSetupScene,
+    ) {
+        self.draw_centered_text(frame, 19, "ENTER GENERATION ID", SETTINGS_CURSOR_WHITE, 2);
+        let editor_text = if scene.editor_text.is_empty() {
+            "TYPE OR USE GRID"
+        } else {
+            &scene.editor_text
+        };
+        self.draw_centered_text(frame, 40, editor_text, GO_MENU_SELECTION_COLOR, 1);
+        if let Some(error) = scene.editor_error {
+            self.draw_centered_text(frame, 52, &error.to_string(), RgbColor::new(255, 80, 64), 1);
+        }
+
+        const ALPHABET: &str = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+        for (index, character) in ALPHABET.chars().enumerate() {
+            let column = index % 8;
+            let row = index / 8;
+            let x = 43 + column as i32 * 31;
+            let y = 74 + row as i32 * 18;
+            let selected = scene.grid_cursor == index;
+            if selected {
+                frame.fill_rect(x - 6, y - 5, 17, 15, INPUT_ACTIVE_BG);
+                frame.stroke_rect(x - 6, y - 5, 17, 15, SETTINGS_SELECTED_ORANGE);
+            }
+            self.draw_text_with_shadow(
+                frame,
+                x,
+                y,
+                &character.to_string(),
+                if selected {
+                    SETTINGS_SELECTED_ORANGE
+                } else {
+                    SETTINGS_CURSOR_WHITE
+                },
+                2,
+            );
+        }
+
+        self.draw_grid_action(frame, 75, 151, "BACK", scene.grid_cursor == 32);
+        self.draw_grid_action(frame, 193, 151, "DONE", scene.grid_cursor == 33);
+        self.draw_centered_text(frame, 177, "ESC CANCEL", SETTINGS_WIDGET_TEXT_DIM, 1);
+    }
+
+    fn draw_grid_action(
+        &self,
+        frame: &mut FrameBuffer320x200,
+        center_x: i32,
+        y: i32,
+        label: &str,
+        selected: bool,
+    ) {
+        let width = text_pixel_width(label, 2);
+        if selected {
+            frame.fill_rect(
+                center_x - width / 2 - 7,
+                y - 5,
+                width + 14,
+                17,
+                INPUT_ACTIVE_BG,
+            );
+            frame.stroke_rect(
+                center_x - width / 2 - 7,
+                y - 5,
+                width + 14,
+                17,
+                SETTINGS_SELECTED_ORANGE,
+            );
+        }
+        self.draw_text_with_shadow(
+            frame,
+            center_x - width / 2,
+            y,
+            label,
+            if selected {
+                SETTINGS_SELECTED_ORANGE
+            } else {
+                SETTINGS_CURSOR_WHITE
+            },
+            2,
+        );
+    }
+
+    fn draw_centered_text(
+        &self,
+        frame: &mut FrameBuffer320x200,
+        y: i32,
+        text: &str,
+        color: RgbColor,
+        scale: usize,
+    ) {
+        let x = FRAMEBUFFER_WIDTH as i32 / 2 - text_pixel_width(text, scale) / 2;
+        self.draw_text_with_shadow(frame, x, y, text, color, scale);
+    }
+
     fn render_go_menu(&self, frame: &mut FrameBuffer320x200, scene: &GoMenuScene) {
         frame.clear(RgbColor::new(0, 0, 0));
         self.draw_archive_frame(frame, &self.assets.go_menu, 0, 1.0, 1.0);
@@ -958,6 +1146,20 @@ impl ReferenceRenderer {
             &self.assets.speed_gauge,
             scene.dashboard.speed_gauge_visible_count,
         );
+        if scene.did_win {
+            if let Some(generation_id) = scene.generation_id {
+                frame.fill_rect(54, 45, 212, 37, INPUT_PANEL_BG);
+                frame.stroke_rect(54, 45, 212, 37, GO_MENU_SELECTION_COLOR);
+                self.draw_centered_text(frame, 52, "ROAD COMPLETE", GO_MENU_SELECTION_COLOR, 2);
+                self.draw_centered_text(
+                    frame,
+                    69,
+                    &generation_id.to_string(),
+                    SETTINGS_CURSOR_WHITE,
+                    1,
+                );
+            }
+        }
     }
 
     fn render_play_scene_with_debug(
@@ -3852,6 +4054,7 @@ fn glyph_rows(ch: char) -> Option<[u8; 5]> {
         '9' => [0b111, 0b101, 0b111, 0b001, 0b110],
         '%' => [0b101, 0b001, 0b010, 0b100, 0b101],
         '.' => [0b000, 0b000, 0b000, 0b000, 0b010],
+        '-' => [0b000, 0b000, 0b111, 0b000, 0b000],
         _ => return None,
     })
 }
@@ -3917,11 +4120,11 @@ mod tests {
     use std::path::PathBuf;
 
     use skyroads_core::{
-        AppInput, AttractModeApp, ControlMode, DirectionalActivation, DisplaySettings, GoMenuScene,
-        GoMenuSelection, InputActivationPreview, InputSettingsCursor, InputSettingsScene,
-        InputTuning, MainMenuScene, MenuCursor, RenderScene, RoadRenderRow, SensitivityPercent,
-        SettingsMenuCursor, SettingsMenuScene, ShipState, SteeringActivation, ThrottleActivation,
-        TriggerActivation, VideoMode,
+        generate_procedural_level, AppInput, AttractModeApp, ControlMode, DirectionalActivation,
+        DisplaySettings, GoMenuScene, GoMenuSelection, InputActivationPreview, InputSettingsCursor,
+        InputSettingsScene, InputTuning, MainMenuScene, MenuCursor, RenderScene, RoadRenderRow,
+        SensitivityPercent, SettingsMenuCursor, SettingsMenuScene, ShipState, SteeringActivation,
+        ThrottleActivation, TriggerActivation, VideoMode,
     };
     use skyroads_data::{
         level_from_road_entry, load_demo_rec_path, load_roads_lzs_path,
@@ -4028,6 +4231,30 @@ mod tests {
 
     fn enter_gameplay(app: &mut AttractModeApp) {
         enter_gameplay_road(app, 1);
+    }
+
+    fn enter_procedural_gameplay(
+        app: &mut AttractModeApp,
+        literal_id: &str,
+    ) -> skyroads_core::DemoPlaybackState {
+        app.set_procedural_generation_id(literal_id.parse().unwrap());
+        skip_intro_to_main_menu(app);
+        app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
+        app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        });
+        let tick = app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        });
+        let RenderScene::Gameplay(scene) = tick.render_scene else {
+            panic!("expected procedural gameplay for {literal_id}");
+        };
+        scene
     }
 
     fn enter_gameplay_road(app: &mut AttractModeApp, road_index: usize) {
@@ -4162,12 +4389,20 @@ mod tests {
     }
 
     fn move_scene_to_road_position(
-        mut scene: skyroads_core::DemoPlaybackState,
+        scene: skyroads_core::DemoPlaybackState,
         road_index: usize,
         z_position: f64,
     ) -> skyroads_core::DemoPlaybackState {
         let roads = load_roads_lzs_path(repo_root().join("ROADS.LZS")).unwrap();
         let level = level_from_road_entry(&roads.roads[road_index]);
+        move_scene_to_level_position(scene, &level, z_position)
+    }
+
+    fn move_scene_to_level_position(
+        mut scene: skyroads_core::DemoPlaybackState,
+        level: &skyroads_data::Level,
+        z_position: f64,
+    ) -> skyroads_core::DemoPlaybackState {
         let current_row = (z_position * 8.0).floor() as usize;
         let current_group = current_row >> 3;
         let start_row = current_group.saturating_sub(3);
@@ -5111,6 +5346,93 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn procedural_setup_and_id_grid_have_distinct_complete_frames() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+        let mut app = make_app();
+        skip_intro_to_main_menu(&mut app);
+        app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
+        let setup = app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        });
+        let setup_frame = renderer.render_scene(&setup.render_scene);
+
+        for _ in 0..3 {
+            app.tick(AppInput {
+                down: true,
+                ..AppInput::default()
+            });
+        }
+        let editor = app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        });
+        let editor_frame = renderer.render_scene(&editor.render_scene);
+
+        assert_ne!(frame_hash(&setup_frame), 0);
+        assert_ne!(frame_hash(&editor_frame), 0);
+        assert_ne!(frame_hash(&setup_frame), frame_hash(&editor_frame));
+        assert!(editor_frame.pixels_indexed.iter().any(|pixel| *pixel != 0));
+    }
+
+    #[test]
+    fn representative_procedural_roads_have_stable_distinct_visuals() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let renderer = ReferenceRenderer::new(assets);
+        let mut hashes = Vec::new();
+
+        for (literal_id, expected_body_hash, expected_late_hash) in [
+            (
+                "SR1-E-0000-0000-2V",
+                7_376_101_315_448_386_756_u64,
+                16_630_071_493_465_484_291_u64,
+            ),
+            (
+                "SR1-C-28T5-CY4T-94",
+                41_177_023_281_915_249_u64,
+                10_238_867_852_997_372_087_u64,
+            ),
+            (
+                "SR1-H-ZZZZ-ZZZZ-V3",
+                4_299_292_748_902_959_449_u64,
+                6_895_176_746_267_668_130_u64,
+            ),
+        ] {
+            let generation_id = literal_id.parse().unwrap();
+            let level = generate_procedural_level(generation_id);
+            let scene = enter_procedural_gameplay(&mut make_app(), literal_id);
+            let body_scene =
+                move_scene_to_level_position(scene.clone(), &level, level.length() as f64 * 0.45);
+            let late_scene =
+                move_scene_to_level_position(scene, &level, level.length() as f64 * 0.75);
+            let body_hash = frame_hash(&renderer.render_scene(&RenderScene::Gameplay(body_scene)));
+            let late_hash = frame_hash(&renderer.render_scene(&RenderScene::Gameplay(late_scene)));
+
+            assert_eq!(
+                body_hash, expected_body_hash,
+                "body snapshot for {literal_id}"
+            );
+            assert_eq!(
+                late_hash, expected_late_hash,
+                "late snapshot for {literal_id}"
+            );
+            hashes.extend([body_hash, late_hash]);
+        }
+
+        hashes.sort_unstable();
+        hashes.dedup();
+        assert_eq!(
+            hashes.len(),
+            6,
+            "representative sections must look distinct"
+        );
     }
 
     #[test]

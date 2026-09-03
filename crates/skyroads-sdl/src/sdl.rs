@@ -18,6 +18,7 @@ pub mod scancode {
     pub const W: usize = 26;
     pub const RETURN: usize = 40;
     pub const ESCAPE: usize = 41;
+    pub const BACKSPACE: usize = 42;
     pub const TAB: usize = 43;
     pub const SPACE: usize = 44;
     pub const RIGHT: usize = 79;
@@ -33,6 +34,7 @@ const SDL_INIT_VIDEO: u32 = 0x0000_0020;
 const SDL_QUIT: u32 = 0x0100;
 const SDL_DISPLAYEVENT: u32 = 0x0150;
 const SDL_WINDOWEVENT: u32 = 0x0200;
+const SDL_TEXTINPUT: u32 = 0x0303;
 const SDL_WINDOWEVENT_DISPLAY_CHANGED: u8 = 18;
 const SDL_JOYDEVICEADDED: u32 = 0x0605;
 const SDL_JOYDEVICEREMOVED: u32 = 0x0606;
@@ -144,6 +146,17 @@ struct SDL_ControllerDeviceEvent {
     which: i32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SDL_TextInputEvent {
+    type_: u32,
+    timestamp: u32,
+    window_id: u32,
+    text: [c_char; 32],
+}
+
+const _: [(); 44] = [(); std::mem::size_of::<SDL_TextInputEvent>()];
+
 const _: [(); 12] = [(); std::mem::size_of::<SDL_JoyDeviceEvent>()];
 const _: [(); 12] = [(); std::mem::size_of::<SDL_ControllerDeviceEvent>()];
 const _: [(); std::mem::align_of::<u32>()] = [(); std::mem::align_of::<SDL_JoyDeviceEvent>()];
@@ -156,6 +169,7 @@ union SDL_Event {
     window: SDL_WindowEvent,
     jdevice: SDL_JoyDeviceEvent,
     cdevice: SDL_ControllerDeviceEvent,
+    text: SDL_TextInputEvent,
     padding: [u8; 56],
     align: *mut c_void,
 }
@@ -271,6 +285,8 @@ extern "C" {
         h: *mut c_int,
     ) -> c_int;
     fn SDL_PollEvent(event: *mut SDL_Event) -> c_int;
+    fn SDL_StartTextInput();
+    fn SDL_StopTextInput();
     fn SDL_GetKeyboardState(numkeys: *mut c_int) -> *const u8;
     fn SDL_GetMouseState(x: *mut c_int, y: *mut c_int) -> u32;
     fn SDL_WarpMouseInWindow(window: *mut SDL_Window, x: c_int, y: c_int);
@@ -355,6 +371,7 @@ pub struct PendingEvents {
     pub display_changed: bool,
     pub input_devices: Vec<InputDeviceEvent>,
     pub input_errors: Vec<String>,
+    pub text_input: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -635,6 +652,23 @@ impl Sdl {
                     pending.display_changed |=
                         window_event.event == SDL_WINDOWEVENT_DISPLAY_CHANGED;
                 }
+                SDL_TEXTINPUT => {
+                    // SAFETY: The checked event type selects SDL_Event.text.
+                    // SDL initializes a NUL-terminated UTF-8 buffer here.
+                    let text_event = unsafe { event.text };
+                    let byte_count = text_event
+                        .text
+                        .iter()
+                        .position(|character| *character == 0)
+                        .unwrap_or(text_event.text.len());
+                    let bytes = text_event.text[..byte_count]
+                        .iter()
+                        .map(|character| *character as u8)
+                        .collect::<Vec<_>>();
+                    pending
+                        .text_input
+                        .push_str(&String::from_utf8_lossy(&bytes));
+                }
                 SDL_RENDER_TARGETS_RESET | SDL_RENDER_DEVICE_RESET => {
                     pending.renderer_reset = true;
                 }
@@ -664,6 +698,18 @@ impl Sdl {
             }
         }
         pending
+    }
+
+    pub fn set_text_input_active(&self, active: bool) {
+        // SAFETY: `self` proves SDL's video subsystem is live. These calls only
+        // toggle process-local text event delivery.
+        unsafe {
+            if active {
+                SDL_StartTextInput();
+            } else {
+                SDL_StopTextInput();
+            }
+        }
     }
 
     pub fn keyboard_state(&self) -> KeyboardState {

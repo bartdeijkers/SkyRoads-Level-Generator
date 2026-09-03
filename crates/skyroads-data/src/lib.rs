@@ -41,8 +41,8 @@ pub use image::{
     ImagePalette, RgbColor, SCREEN_HEIGHT, SCREEN_WIDTH,
 };
 pub use level::{
-    level_from_road_entry, levels_from_roads_archive, Level, LevelCell, TouchEffect, GROUND_Y,
-    LEVEL_CENTER_X, LEVEL_MAX_X, LEVEL_MIN_X, LEVEL_TILE_STRIDE_X,
+    level_from_road_entry, levels_from_roads_archive, Level, LevelCell, LevelKind, LevelTheme,
+    TouchEffect, GROUND_Y, LEVEL_CENTER_X, LEVEL_MAX_X, LEVEL_MIN_X, LEVEL_TILE_STRIDE_X,
 };
 pub use muzax::{
     load_muzax_lzs_bytes, load_muzax_lzs_path, MuzaxArchive, MuzaxCommandHead, MuzaxCommandSummary,

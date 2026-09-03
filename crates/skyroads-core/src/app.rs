@@ -1,12 +1,13 @@
 use skyroads_data::{
-    ControlMode, DemoRecording, Level, LevelCell, SkyroadsCfg, ROAD_COLUMNS,
+    ControlMode, DemoRecording, Level, LevelCell, LevelKind, SkyroadsCfg, ROAD_COLUMNS,
     SKYROADS_CFG_COMPLETION_COUNT,
 };
 
 use crate::{
-    sample_demo_input_for_ship, ControllerState, DisplayMode, DisplayModeCatalog, DisplaySettings,
-    GameplayEvent, GameplaySession, InputActivationPreview, InputTuning, SensitivityPercent,
-    VideoMode,
+    generate_procedural_level, sample_demo_input_for_ship, ControllerState, DisplayMode,
+    DisplayModeCatalog, DisplaySettings, GameplayEvent, GameplaySession, GenerationId,
+    GenerationIdError, InputActivationPreview, InputTuning, ProceduralDifficulty,
+    SensitivityPercent, VideoMode,
 };
 
 const TICKS_PER_SECOND: usize = 70;
@@ -37,6 +38,7 @@ pub enum AppMode {
     SettingsMenu,
     InputSettings,
     GoMenu,
+    ProceduralSetup,
     DemoPlayback,
     Gameplay,
 }
@@ -44,6 +46,7 @@ pub enum AppMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuCursor {
     Start,
+    Procedural,
     Config,
     Help,
     Quit,
@@ -83,19 +86,98 @@ impl MenuCursor {
     pub fn index(self) -> usize {
         match self {
             Self::Start => 0,
-            Self::Config => 1,
-            Self::Help => 2,
-            Self::Quit => 3,
+            Self::Procedural => 1,
+            Self::Config => 2,
+            Self::Help => 3,
+            Self::Quit => 4,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Start => "START",
+            Self::Procedural => "PROCEDURAL",
+            Self::Config => "CONFIG",
+            Self::Help => "HELP",
+            Self::Quit => "QUIT",
+        }
+    }
+
+    pub fn original_art_index(self) -> Option<usize> {
+        match self {
+            Self::Start => Some(0),
+            Self::Config => Some(1),
+            Self::Help => Some(2),
+            Self::Procedural | Self::Quit => None,
+        }
+    }
+
+    fn move_by(self, delta: i8) -> Self {
+        match (self.index() as i8 + delta).clamp(0, 4) {
+            0 => Self::Start,
+            1 => Self::Procedural,
+            2 => Self::Config,
+            3 => Self::Help,
+            _ => Self::Quit,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProceduralSetupCursor {
+    #[default]
+    Play,
+    NewRandom,
+    Difficulty,
+    EnterId,
+}
+
+impl ProceduralSetupCursor {
+    pub fn index(self) -> usize {
+        match self {
+            Self::Play => 0,
+            Self::NewRandom => 1,
+            Self::Difficulty => 2,
+            Self::EnterId => 3,
         }
     }
 
     fn move_by(self, delta: i8) -> Self {
         match (self.index() as i8 + delta).clamp(0, 3) {
-            0 => Self::Start,
-            1 => Self::Config,
-            2 => Self::Help,
-            _ => Self::Quit,
+            0 => Self::Play,
+            1 => Self::NewRandom,
+            2 => Self::Difficulty,
+            _ => Self::EnterId,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TextInput {
+    bytes: [u8; 32],
+    length: u8,
+}
+
+impl TextInput {
+    pub fn new(text: &str) -> Self {
+        let mut input = Self::default();
+        for byte in text.bytes().filter(u8::is_ascii) {
+            if usize::from(input.length) == input.bytes.len() {
+                break;
+            }
+            input.bytes[usize::from(input.length)] = byte;
+            input.length += 1;
+        }
+        input
+    }
+
+    pub fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.bytes[..usize::from(self.length)])
+            .expect("TextInput only stores ASCII")
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.length == 0
     }
 }
 
@@ -354,6 +436,8 @@ pub struct AppInput {
     pub space: bool,
     pub previous_setting: bool,
     pub next_setting: bool,
+    pub backspace: bool,
+    pub text_input: TextInput,
     pub up_held: bool,
     pub down_held: bool,
     pub left_held: bool,
@@ -443,6 +527,8 @@ pub struct GameplayRenderContext {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DemoPlaybackState {
     pub road_index: usize,
+    pub level_kind: LevelKind,
+    pub palette_index: usize,
     pub world_index: usize,
     pub gravity: u16,
     pub level_length: usize,
@@ -452,6 +538,7 @@ pub struct DemoPlaybackState {
     pub rows: Vec<RoadRenderRow>,
     pub did_win: bool,
     pub is_demo: bool,
+    pub generation_id: Option<GenerationId>,
     pub craft_state: crate::ShipState,
     pub snapshot: crate::GameSnapshot,
     pub dashboard: DashboardRenderState,
@@ -492,6 +579,17 @@ pub struct InputSettingsScene {
     pub preview: InputActivationPreview,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProceduralSetupScene {
+    pub cursor: ProceduralSetupCursor,
+    pub generation_id: GenerationId,
+    pub difficulty: ProceduralDifficulty,
+    pub editing_id: bool,
+    pub editor_text: String,
+    pub editor_error: Option<GenerationIdError>,
+    pub grid_cursor: usize,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum RenderScene {
     Intro(IntroSequenceState),
@@ -500,6 +598,7 @@ pub enum RenderScene {
     GoMenu(GoMenuScene),
     SettingsMenu(SettingsMenuScene),
     InputSettings(InputSettingsScene),
+    ProceduralSetup(ProceduralSetupScene),
     DemoPlayback(DemoPlaybackState),
     Gameplay(DemoPlaybackState),
 }
@@ -526,6 +625,13 @@ pub struct AttractModeApp {
     main_menu_cursor: MenuCursor,
     help_page: usize,
     go_menu_selection: GoMenuSelection,
+    procedural_id: GenerationId,
+    procedural_cursor: ProceduralSetupCursor,
+    procedural_random_state: u64,
+    procedural_editor_active: bool,
+    procedural_editor_text: String,
+    procedural_editor_error: Option<GenerationIdError>,
+    procedural_grid_cursor: usize,
     completion_counts: [u16; SKYROADS_CFG_COMPLETION_COUNT],
     gameplay_win_recorded: bool,
     intro_song_started: bool,
@@ -571,6 +677,13 @@ impl AttractModeApp {
             main_menu_cursor: MenuCursor::Start,
             help_page: 0,
             go_menu_selection: GoMenuSelection::default(),
+            procedural_id: GenerationId::default(),
+            procedural_cursor: ProceduralSetupCursor::default(),
+            procedural_random_state: GenerationId::default().seed(),
+            procedural_editor_active: false,
+            procedural_editor_text: String::new(),
+            procedural_editor_error: None,
+            procedural_grid_cursor: 0,
             completion_counts: [0; SKYROADS_CFG_COMPLETION_COUNT],
             gameplay_win_recorded: false,
             intro_song_started: false,
@@ -629,6 +742,23 @@ impl AttractModeApp {
 
     pub fn set_music_random_seed(&mut self, seed: u32) {
         self.road_song_selector = RoadSongSelector::new(seed);
+    }
+
+    pub fn procedural_generation_id(&self) -> GenerationId {
+        self.procedural_id
+    }
+
+    pub fn set_procedural_generation_id(&mut self, generation_id: GenerationId) {
+        self.procedural_id = generation_id;
+        self.procedural_editor_error = None;
+    }
+
+    pub fn set_procedural_random_seed(&mut self, seed: u64) {
+        self.procedural_random_state = seed;
+    }
+
+    pub fn is_editing_procedural_id(&self) -> bool {
+        self.mode == AppMode::ProceduralSetup && self.procedural_editor_active
     }
 
     pub fn render_scene(&self) -> RenderScene {
@@ -778,6 +908,7 @@ impl AttractModeApp {
             AppMode::SettingsMenu => self.tick_settings_menu(input, &mut audio_commands),
             AppMode::InputSettings => self.tick_input_settings(input),
             AppMode::GoMenu => self.tick_go_menu(input, &mut audio_commands),
+            AppMode::ProceduralSetup => self.tick_procedural_setup(input, &mut audio_commands),
             AppMode::DemoPlayback => self.tick_demo(input, &mut audio_commands),
             AppMode::Gameplay => self.tick_gameplay(input, &mut audio_commands),
             AppMode::Boot => {
@@ -837,6 +968,7 @@ impl AttractModeApp {
             self.menu_idle_tick = 0;
             match self.main_menu_cursor {
                 MenuCursor::Start => self.enter_go_menu(audio_commands),
+                MenuCursor::Procedural => self.enter_procedural_setup(audio_commands),
                 MenuCursor::Config => self.enter_settings_menu(),
                 MenuCursor::Help => {
                     self.help_page = 0;
@@ -889,6 +1021,143 @@ impl AttractModeApp {
         if input.enter || input.space {
             self.start_gameplay(audio_commands);
         }
+    }
+
+    fn tick_procedural_setup(&mut self, input: AppInput, audio_commands: &mut Vec<AudioCommand>) {
+        if self.procedural_editor_active {
+            self.tick_procedural_editor(input);
+            return;
+        }
+
+        if input.escape {
+            self.return_to_main_menu(audio_commands);
+            return;
+        }
+        if input.up {
+            self.procedural_cursor = self.procedural_cursor.move_by(-1);
+        }
+        if input.down {
+            self.procedural_cursor = self.procedural_cursor.move_by(1);
+        }
+
+        if self.procedural_cursor == ProceduralSetupCursor::Difficulty {
+            if input.left {
+                let difficulty = self.procedural_id.difficulty().previous();
+                self.procedural_id = self.procedural_id.with_difficulty(difficulty);
+            }
+            if input.right {
+                let difficulty = self.procedural_id.difficulty().next();
+                self.procedural_id = self.procedural_id.with_difficulty(difficulty);
+            }
+        }
+
+        if !(input.enter || input.space) {
+            return;
+        }
+
+        match self.procedural_cursor {
+            ProceduralSetupCursor::Play => self.start_procedural_gameplay(audio_commands),
+            ProceduralSetupCursor::NewRandom => self.generate_new_procedural_id(),
+            ProceduralSetupCursor::Difficulty => {
+                let difficulty = self.procedural_id.difficulty().next();
+                self.procedural_id = self.procedural_id.with_difficulty(difficulty);
+            }
+            ProceduralSetupCursor::EnterId => {
+                self.procedural_editor_active = true;
+                self.procedural_editor_text.clear();
+                self.procedural_editor_error = None;
+                self.procedural_grid_cursor = 0;
+            }
+        }
+    }
+
+    fn tick_procedural_editor(&mut self, input: AppInput) {
+        if input.escape {
+            self.procedural_editor_active = false;
+            self.procedural_editor_text.clear();
+            self.procedural_editor_error = None;
+            return;
+        }
+
+        let received_keyboard_text = !input.text_input.as_str().is_empty();
+        for character in input.text_input.as_str().chars() {
+            self.push_procedural_editor_character(character);
+        }
+        if received_keyboard_text {
+            self.procedural_grid_cursor = 33;
+        }
+        if input.backspace {
+            self.procedural_editor_text.pop();
+            self.procedural_editor_error = None;
+        }
+
+        const GRID_COLUMNS: usize = 8;
+        const GRID_ITEMS: usize = 34;
+        if input.left {
+            self.procedural_grid_cursor = self.procedural_grid_cursor.saturating_sub(1);
+        }
+        if input.right {
+            self.procedural_grid_cursor = (self.procedural_grid_cursor + 1).min(GRID_ITEMS - 1);
+        }
+        if input.up {
+            self.procedural_grid_cursor = self.procedural_grid_cursor.saturating_sub(GRID_COLUMNS);
+        }
+        if input.down {
+            self.procedural_grid_cursor =
+                (self.procedural_grid_cursor + GRID_COLUMNS).min(GRID_ITEMS - 1);
+        }
+
+        if !(input.enter || input.space) {
+            return;
+        }
+
+        match self.procedural_grid_cursor {
+            0..=31 => {
+                let character = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+                    .chars()
+                    .nth(self.procedural_grid_cursor)
+                    .expect("grid index is inside the Crockford alphabet");
+                self.push_procedural_editor_character(character);
+            }
+            32 => {
+                self.procedural_editor_text.pop();
+                self.procedural_editor_error = None;
+            }
+            33 => self.submit_procedural_editor(),
+            _ => unreachable!("procedural grid cursor is clamped"),
+        }
+    }
+
+    fn push_procedural_editor_character(&mut self, character: char) {
+        let allowed = character.is_ascii_alphanumeric()
+            || character == '-'
+            || character.is_ascii_whitespace();
+        if allowed && self.procedural_editor_text.len() < 24 {
+            self.procedural_editor_text
+                .push(character.to_ascii_uppercase());
+            self.procedural_editor_error = None;
+        }
+    }
+
+    fn submit_procedural_editor(&mut self) {
+        match self.procedural_editor_text.parse::<GenerationId>() {
+            Ok(generation_id) => {
+                self.procedural_id = generation_id;
+                self.procedural_editor_active = false;
+                self.procedural_editor_text.clear();
+                self.procedural_editor_error = None;
+            }
+            Err(error) => self.procedural_editor_error = Some(error),
+        }
+    }
+
+    fn generate_new_procedural_id(&mut self) {
+        self.procedural_random_state = splitmix64(self.procedural_random_state);
+        self.procedural_id = GenerationId::new(
+            self.procedural_random_state,
+            self.procedural_id.difficulty(),
+        );
+        self.procedural_editor_error = None;
     }
 
     fn tick_help_menu(&mut self, input: AppInput, _audio_commands: &mut Vec<AudioCommand>) {
@@ -1005,26 +1274,39 @@ impl AttractModeApp {
     }
 
     fn tick_gameplay(&mut self, input: AppInput, audio_commands: &mut Vec<AudioCommand>) {
-        if self.gameplay_session.did_win && !self.gameplay_win_recorded {
+        let is_campaign = self.gameplay_session.level.kind == LevelKind::Campaign;
+        if is_campaign && self.gameplay_session.did_win && !self.gameplay_win_recorded {
             self.record_level_completion(self.current_level_index);
             self.gameplay_win_recorded = true;
         }
 
         if input.escape {
-            self.enter_go_menu(audio_commands);
+            if self.gameplay_session.level.kind == LevelKind::Procedural {
+                self.enter_procedural_setup(audio_commands);
+            } else {
+                self.enter_go_menu(audio_commands);
+            }
             return;
         }
 
         if self.gameplay_session.did_win {
             if input.enter || input.space {
-                self.enter_go_menu(audio_commands);
+                if self.gameplay_session.level.kind == LevelKind::Procedural {
+                    self.enter_procedural_setup(audio_commands);
+                } else {
+                    self.enter_go_menu(audio_commands);
+                }
             }
             return;
         }
 
         if self.gameplay_session.ship.state != crate::ShipState::Alive {
             if input.enter || input.space {
-                self.start_gameplay(audio_commands);
+                if self.gameplay_session.level.kind == LevelKind::Procedural {
+                    self.start_procedural_gameplay(audio_commands);
+                } else {
+                    self.start_gameplay(audio_commands);
+                }
                 return;
             }
             if self.gameplay_session.post_death_animation_complete() {
@@ -1057,6 +1339,15 @@ impl AttractModeApp {
         audio_commands.push(AudioCommand::PlaySong(self.road_song_selector.next_song()));
     }
 
+    fn start_procedural_gameplay(&mut self, audio_commands: &mut Vec<AudioCommand>) {
+        self.mode = AppMode::Gameplay;
+        self.menu_idle_tick = 0;
+        self.gameplay_session = GameplaySession::new(generate_procedural_level(self.procedural_id));
+        self.gameplay_win_recorded = false;
+        self.menu_song_started = false;
+        audio_commands.push(AudioCommand::PlaySong(self.road_song_selector.next_song()));
+    }
+
     fn enter_main_menu(&mut self, audio_commands: &mut Vec<AudioCommand>) {
         self.mode = AppMode::MainMenu;
         self.menu_idle_tick = 0;
@@ -1070,6 +1361,19 @@ impl AttractModeApp {
         self.mode = AppMode::GoMenu;
         self.menu_idle_tick = 0;
         self.go_menu_selection = GoMenuSelection::from_road_index(self.current_level_index);
+        if !self.menu_song_started {
+            audio_commands.push(AudioCommand::PlaySong(MENU_SONG_INDEX));
+            self.menu_song_started = true;
+        }
+    }
+
+    fn enter_procedural_setup(&mut self, audio_commands: &mut Vec<AudioCommand>) {
+        self.mode = AppMode::ProceduralSetup;
+        self.menu_idle_tick = 0;
+        self.procedural_cursor = ProceduralSetupCursor::Play;
+        self.procedural_editor_active = false;
+        self.procedural_editor_text.clear();
+        self.procedural_editor_error = None;
         if !self.menu_song_started {
             audio_commands.push(AudioCommand::PlaySong(MENU_SONG_INDEX));
             self.menu_song_started = true;
@@ -1111,6 +1415,15 @@ impl AttractModeApp {
                 cursor: self.input_settings_cursor,
                 tuning: self.input_tuning,
                 preview: self.input_preview,
+            }),
+            AppMode::ProceduralSetup => RenderScene::ProceduralSetup(ProceduralSetupScene {
+                cursor: self.procedural_cursor,
+                generation_id: self.procedural_id,
+                difficulty: self.procedural_id.difficulty(),
+                editing_id: self.procedural_editor_active,
+                editor_text: self.procedural_editor_text.clone(),
+                editor_error: self.procedural_editor_error,
+                grid_cursor: self.procedural_grid_cursor,
             }),
             AppMode::DemoPlayback => RenderScene::DemoPlayback(self.current_demo_scene()),
             AppMode::Gameplay => RenderScene::Gameplay(self.current_gameplay_scene()),
@@ -1250,7 +1563,9 @@ impl AttractModeApp {
 
         DemoPlaybackState {
             road_index: session.level.road_index,
-            world_index: world_index_for_level(session.level.road_index),
+            level_kind: session.level.kind,
+            palette_index: session.level.theme.palette_index,
+            world_index: session.level.theme.world_index,
             gravity: session.level.gravity,
             level_length: session.level.length(),
             frame_index: session.frame_index(),
@@ -1259,6 +1574,8 @@ impl AttractModeApp {
             rows,
             did_win: session.did_win,
             is_demo,
+            generation_id: (session.level.kind == LevelKind::Procedural)
+                .then_some(self.procedural_id),
             craft_state: session.ship.state,
             snapshot: crate::GameSnapshot {
                 x_position: session.ship.x_position,
@@ -1313,12 +1630,11 @@ impl AttractModeApp {
     }
 }
 
-fn world_index_for_level(level_index: usize) -> usize {
-    if level_index == 0 {
-        0
-    } else {
-        (level_index - 1) / 3
-    }
+fn splitmix64(state: u64) -> u64 {
+    let mut value = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    value ^ (value >> 31)
 }
 
 fn axis(negative: bool, positive: bool) -> i8 {
@@ -1393,8 +1709,9 @@ mod tests {
     use super::{
         AppInput, AppMode, AttractModeApp, AudioCommand, ControlMode, DisplayModeCatalog,
         DisplaySettings, GoMenuSelection, InputActivationPreview, InputSettingsCursor, InputTuning,
-        MenuCursor, RenderScene, RoadSongSelector, SensitivityPercent, SettingsMenuCursor,
-        VideoMode, FIRST_ROAD_SONG_INDEX, RENDER_ROWS_BEHIND, ROAD_SONG_COUNT,
+        MenuCursor, ProceduralDifficulty, ProceduralSetupCursor, RenderScene, RoadSongSelector,
+        SensitivityPercent, SettingsMenuCursor, TextInput, VideoMode, FIRST_ROAD_SONG_INDEX,
+        MENU_SONG_INDEX, RENDER_ROWS_BEHIND, ROAD_SONG_COUNT,
     };
 
     fn repo_root() -> PathBuf {
@@ -1442,6 +1759,10 @@ mod tests {
     }
 
     fn enter_settings_menu(app: &mut AttractModeApp) {
+        app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
         app.tick(AppInput {
             down: true,
             ..AppInput::default()
@@ -1552,7 +1873,12 @@ mod tests {
         let mut app = make_app();
         skip_intro_to_main_menu(&mut app);
 
-        for expected_cursor in [MenuCursor::Config, MenuCursor::Help, MenuCursor::Quit] {
+        for expected_cursor in [
+            MenuCursor::Procedural,
+            MenuCursor::Config,
+            MenuCursor::Help,
+            MenuCursor::Quit,
+        ] {
             let tick = app.tick(AppInput {
                 down: true,
                 ..AppInput::default()
@@ -1582,6 +1908,10 @@ mod tests {
     fn help_menu_cycles_back_to_main_menu() {
         let mut app = make_app();
         skip_intro_to_main_menu(&mut app);
+        app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
         app.tick(AppInput {
             down: true,
             ..AppInput::default()
@@ -1665,6 +1995,10 @@ mod tests {
             down: true,
             ..AppInput::default()
         });
+        app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
         let settings = app.tick(AppInput {
             enter: true,
             ..AppInput::default()
@@ -1689,6 +2023,10 @@ mod tests {
     fn settings_menu_can_switch_control_mode_and_toggle_music() {
         let mut app = make_app();
         skip_intro_to_main_menu(&mut app);
+        app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
         app.tick(AppInput {
             down: true,
             ..AppInput::default()
@@ -1746,6 +2084,10 @@ mod tests {
     fn settings_menu_can_toggle_sound_fx() {
         let mut app = make_app();
         skip_intro_to_main_menu(&mut app);
+        app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
         app.tick(AppInput {
             down: true,
             ..AppInput::default()
@@ -1975,6 +2317,10 @@ mod tests {
             [full_hd_60, four_k_60, four_k_144],
         ));
         skip_intro_to_main_menu(&mut app);
+        app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
         app.tick(AppInput {
             down: true,
             ..AppInput::default()
@@ -2300,6 +2646,136 @@ mod tests {
         };
         assert_eq!(scene.selection, GoMenuSelection::from_road_index(17));
         assert_eq!(scene.completion_counts[16], 1);
+    }
+
+    #[test]
+    fn procedural_menu_starts_a_generated_road_without_campaign_progress() {
+        let mut app = make_app();
+        skip_intro_to_main_menu(&mut app);
+        app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
+        let setup = app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        });
+        assert_eq!(setup.mode, AppMode::ProceduralSetup);
+        let RenderScene::ProceduralSetup(scene) = setup.render_scene else {
+            panic!("expected procedural setup");
+        };
+        assert_eq!(scene.cursor, ProceduralSetupCursor::Play);
+
+        let gameplay = app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        });
+        let RenderScene::Gameplay(scene) = gameplay.render_scene else {
+            panic!("expected procedural gameplay");
+        };
+        assert_eq!(scene.level_kind, skyroads_data::LevelKind::Procedural);
+        assert_eq!(scene.generation_id, Some(app.procedural_generation_id()));
+
+        app.gameplay_session.did_win = true;
+        app.tick(AppInput::default());
+        assert_eq!(app.completion_counts, [0; SKYROADS_CFG_COMPLETION_COUNT]);
+        let setup = app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        });
+        assert_eq!(setup.mode, AppMode::ProceduralSetup);
+        assert_eq!(
+            setup.audio_commands,
+            vec![AudioCommand::PlaySong(MENU_SONG_INDEX)]
+        );
+    }
+
+    #[test]
+    fn procedural_difficulty_and_random_actions_change_the_share_id() {
+        let mut app = make_app();
+        skip_intro_to_main_menu(&mut app);
+        app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
+        app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        });
+        let original = app.procedural_generation_id();
+
+        app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
+        app.set_procedural_random_seed(1234);
+        app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        });
+        let randomized = app.procedural_generation_id();
+        assert_ne!(randomized.seed(), original.seed());
+
+        app.tick(AppInput {
+            down: true,
+            right: true,
+            ..AppInput::default()
+        });
+        assert_eq!(
+            app.procedural_generation_id().difficulty(),
+            ProceduralDifficulty::Hard
+        );
+        assert_eq!(app.procedural_generation_id().seed(), randomized.seed());
+    }
+
+    #[test]
+    fn procedural_editor_accepts_typed_ids_and_keeps_current_id_on_error() {
+        let mut app = make_app();
+        skip_intro_to_main_menu(&mut app);
+        app.tick(AppInput {
+            down: true,
+            ..AppInput::default()
+        });
+        app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        });
+        for _ in 0..3 {
+            app.tick(AppInput {
+                down: true,
+                ..AppInput::default()
+            });
+        }
+        app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        });
+        assert!(app.is_editing_procedural_id());
+
+        let original = app.procedural_generation_id();
+        app.tick(AppInput {
+            text_input: TextInput::new("NOT-A-VALID-ID"),
+            ..AppInput::default()
+        });
+        let invalid = app.tick(AppInput {
+            enter: true,
+            ..AppInput::default()
+        });
+        assert_eq!(app.procedural_generation_id(), original);
+        let RenderScene::ProceduralSetup(invalid_scene) = invalid.render_scene else {
+            panic!("expected procedural editor");
+        };
+        assert!(invalid_scene.editor_error.is_some());
+
+        let replacement = crate::GenerationId::new(987_654, ProceduralDifficulty::Easy);
+        app.procedural_editor_text.clear();
+        app.tick(AppInput {
+            text_input: TextInput::new(&replacement.to_string()),
+            enter: true,
+            ..AppInput::default()
+        });
+        assert_eq!(app.procedural_generation_id(), replacement);
+        assert!(!app.is_editing_procedural_id());
     }
 
     #[test]

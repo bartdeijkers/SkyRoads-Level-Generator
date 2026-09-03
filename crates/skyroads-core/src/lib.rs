@@ -2,6 +2,7 @@ mod app;
 mod display;
 mod gameplay;
 mod input;
+mod procedural;
 
 use skyroads_data::{
     analyze_road_descriptor, DemoInput, DemoRecording, ExeDispatchEntry, ExeRuntimeTables,
@@ -12,7 +13,8 @@ pub use app::{
     AppInput, AppMode, AppTickResult, AttractModeApp, AudioCommand, DashboardRenderState,
     DemoPlaybackState, GameplayRenderContext, GoMenuScene, GoMenuSelection, HelpMenuScene,
     InputSettingsCursor, InputSettingsScene, IntroSequenceState, MainMenuScene, MenuCursor,
-    RenderScene, RoadRenderRow, SettingsMenuCursor, SettingsMenuScene, ShipRenderState,
+    ProceduralSetupCursor, ProceduralSetupScene, RenderScene, RoadRenderRow, SettingsMenuCursor,
+    SettingsMenuScene, ShipRenderState, TextInput,
 };
 pub use display::{DisplayMode, DisplayModeCatalog, DisplaySettings, VideoMode};
 pub use gameplay::{
@@ -23,6 +25,9 @@ pub use gameplay::{
 pub use input::{
     DirectionalActivation, InputActivationPreview, InputTuning, InvalidSensitivityPercent,
     SensitivityPercent, SteeringActivation, ThrottleActivation, TriggerActivation,
+};
+pub use procedural::{
+    generate_procedural_level, GenerationId, GenerationIdError, ProceduralDifficulty,
 };
 pub use skyroads_data::ControlMode;
 

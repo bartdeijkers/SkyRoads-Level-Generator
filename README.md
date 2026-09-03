@@ -11,6 +11,8 @@ The native port is playable but not yet fully 1:1.
 
 - Intro, menus, demo playback, gameplay, graphics, sound effects, and OPL2
   music run natively.
+- Procedural mode builds finite, themed roads from deterministic visual motifs
+  and supports shareable generation IDs.
 - The runtime loads the original game assets but does not require
   `SKYROADS.EXE` at startup.
 - Keyboard, mouse, and one-player controller input are implemented, including
@@ -67,6 +69,29 @@ To exit using only the controller, return from gameplay to level selection,
 return again to the main menu, select `QUIT`, and confirm. Main-menu Back does
 not exit the application.
 
+## Procedural Roads
+
+Select `PROCEDURAL` on the main menu to create a colorful finite road on Easy,
+Classic, or Hard. Current-generation roads draw 5–8 unique set pieces from a
+library of 26. The library mixes decorative spectacles with tunnels, floating
+islands, branching routes, vertical decks, staircase jumps, sparse flanking
+paths, three-height checkerboard fields, hazards, rewards, and other gameplay
+beats. Several set pieces deliberately remove the central road and lead the
+player onto isolated side blocks. Six visual themes bias each draw and its
+colors, but no named set piece—including tunnels or the staircase jump—is
+guaranteed. Connectors provide readable recovery space between surprises,
+using only the original SkyRoads tile, world, and palette vocabulary.
+
+The setup screen displays a generation ID with an `SR4` prefix. Entering that
+ID regenerates the same difficulty, cells, world, palette, and resources. IDs
+can be typed directly or entered with the on-screen controller grid. `SR1`,
+`SR2`, and `SR3` remain supported and regenerate their original roads exactly;
+incompatible generator changes use a new version prefix instead of changing
+saved roads.
+
+The last valid ID is stored in `SKYROADS-RS-PROCEDURAL.CFG`. It is separate
+from `SKYROADS.CFG`, and procedural wins never change campaign completion.
+
 ## Input and Display Settings
 
 Controls → `INPUT` adjusts mouse and controller sensitivity from `50%` to
@@ -91,6 +116,7 @@ cargo run -p skyroads-cli -- summary .
 cargo run -p skyroads-cli -- demo-sim . 120
 cargo run -p skyroads-cli -- render-capture . /tmp/skyroads-render-capture
 cargo run -p skyroads-sdl -- --smoke-gameplay .
+cargo run -p skyroads-sdl -- --smoke-procedural .
 cargo run -p skyroads-sdl -- --smoke-gamepad .
 cargo run -p skyroads-sdl -- --controller-diagnostics
 ```

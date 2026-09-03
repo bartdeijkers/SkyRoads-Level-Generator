@@ -2,6 +2,7 @@ mod controller_manager;
 mod display_preferences;
 mod gamepad;
 mod input_preferences;
+mod procedural_preferences;
 mod sdl;
 
 use std::env;
@@ -19,7 +20,8 @@ use sdl::{
 use skyroads_audio_ref::{AttractAudioAssets, AudioMixer};
 use skyroads_core::{
     AppInput, AppMode, AttractModeApp, AudioCommand, ControlMode, DisplayMode, DisplayModeCatalog,
-    DisplaySettings, InputTuning, RenderScene, ShipState, VideoMode,
+    DisplaySettings, GenerationId, InputTuning, ProceduralDifficulty, RenderScene, ShipState,
+    TextInput, VideoMode,
 };
 use skyroads_data::{
     levels_from_roads_archive, load_cfg_or_default, load_demo_rec_path, load_roads_lzs_path,
@@ -45,6 +47,7 @@ const DOS_MOUSE_RECENTER_X: i32 = FRAMEBUFFER_WIDTH / 2;
 const DOS_MOUSE_CENTER_Y: i32 = FRAMEBUFFER_HEIGHT / 2;
 const DISPLAY_PREFERENCES_FILENAME: &str = "SKYROADS-RS-DISPLAY.CFG";
 const INPUT_PREFERENCES_FILENAME: &str = "SKYROADS-RS-INPUT.CFG";
+const PROCEDURAL_PREFERENCES_FILENAME: &str = "SKYROADS-RS-PROCEDURAL.CFG";
 
 #[derive(Debug, Clone)]
 struct LaunchConfig {
@@ -63,6 +66,7 @@ struct KeyEdges {
     debug_toggle: bool,
     enter: bool,
     escape: bool,
+    backspace: bool,
     space: bool,
     quit: bool,
 }
@@ -79,14 +83,17 @@ struct HostInput {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AutomationMode {
-    GameplaySmoke,
-    GamepadSmoke,
+    Gameplay,
+    Procedural,
+    Gamepad,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 struct GameplaySmokeAutomation {
+    procedural: bool,
     total_ticks: usize,
     sent_intro_skip: bool,
+    selected_procedural: bool,
     sent_go_menu_open: bool,
     sent_level_start: bool,
     gameplay_ticks: usize,
@@ -113,6 +120,7 @@ struct KeyLatch {
     debug_toggle: bool,
     enter: bool,
     escape: bool,
+    backspace: bool,
     space: bool,
     quit: bool,
     pending_app_input: AppInput,
@@ -206,6 +214,7 @@ impl KeyLatch {
             debug_toggle: keyboard.is_pressed(scancode::TAB),
             enter: raw_enter,
             escape: keyboard.is_pressed(scancode::ESCAPE),
+            backspace: keyboard.is_pressed(scancode::BACKSPACE),
             space: keyboard.is_pressed(scancode::SPACE),
             quit: keyboard.is_pressed(scancode::Q),
         };
@@ -216,6 +225,7 @@ impl KeyLatch {
         let debug_toggle = take_edge(&mut self.debug_toggle, current.debug_toggle);
         let enter_edge = take_edge(&mut self.enter, current.enter);
         let escape = take_edge(&mut self.escape, current.escape);
+        let backspace = take_edge(&mut self.backspace, current.backspace);
         let space = take_edge(&mut self.space, current.space);
         let quit = take_edge(&mut self.quit, current.quit);
         let enter = enter_edge && !shift_held;
@@ -226,6 +236,7 @@ impl KeyLatch {
         self.pending_app_input.right |= right;
         self.pending_app_input.enter |= enter;
         self.pending_app_input.escape |= escape;
+        self.pending_app_input.backspace |= backspace;
         self.pending_app_input.space |= space;
         self.pending_app_input.up_held = current.up;
         self.pending_app_input.down_held = current.down;
@@ -614,6 +625,13 @@ fn space_confirm_action(app_mode: AppMode) -> ConfirmAction {
 }
 
 impl GameplaySmokeAutomation {
+    fn procedural() -> Self {
+        Self {
+            procedural: true,
+            ..Self::default()
+        }
+    }
+
     fn next_input(&mut self, mode: AppMode) -> AppInput {
         self.total_ticks += 1;
         match mode {
@@ -626,6 +644,15 @@ impl GameplaySmokeAutomation {
                     ..AppInput::default()
                 }
             }
+            AppMode::MainMenu
+                if self.procedural && self.sent_intro_skip && !self.selected_procedural =>
+            {
+                self.selected_procedural = true;
+                AppInput {
+                    down: true,
+                    ..AppInput::default()
+                }
+            }
             AppMode::MainMenu if self.sent_intro_skip && !self.sent_go_menu_open => {
                 self.sent_go_menu_open = true;
                 AppInput {
@@ -634,6 +661,13 @@ impl GameplaySmokeAutomation {
                 }
             }
             AppMode::GoMenu if self.sent_go_menu_open && !self.sent_level_start => {
+                self.sent_level_start = true;
+                AppInput {
+                    enter: true,
+                    ..AppInput::default()
+                }
+            }
+            AppMode::ProceduralSetup if self.sent_go_menu_open && !self.sent_level_start => {
                 self.sent_level_start = true;
                 AppInput {
                     enter: true,
@@ -668,8 +702,17 @@ impl GameplaySmokeAutomation {
                             .to_string(),
                     );
                 }
+                let label = if self.procedural {
+                    "procedural smoke"
+                } else {
+                    "gameplay smoke"
+                };
+                let generation = scene
+                    .generation_id
+                    .map(|generation_id| format!(" id={generation_id}"))
+                    .unwrap_or_default();
                 return Ok(Some(format!(
-                    "gameplay smoke ok: frame={} row={} z={:.6} accel={} state={:?}",
+                    "{label} ok:{generation} frame={} row={} z={:.6} accel={} state={:?}",
                     scene.frame_index,
                     scene.current_row,
                     scene.snapshot.z_position,
@@ -786,6 +829,14 @@ fn music_random_seed() -> u32 {
     elapsed.as_secs() as u32 ^ elapsed.subsec_nanos()
 }
 
+fn procedural_random_seed() -> u64 {
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let time_bits = elapsed.as_secs().rotate_left(17) ^ u64::from(elapsed.subsec_nanos());
+    time_bits ^ u64::from(process::id()).rotate_left(32)
+}
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("error: {error}");
@@ -817,6 +868,29 @@ fn run() -> Result<()> {
     let mut app = AttractModeApp::new(levels, demo);
     if config.automation.is_none() {
         app.set_music_random_seed(music_random_seed());
+    }
+    let procedural_preferences_path = config.source_root.join(PROCEDURAL_PREFERENCES_FILENAME);
+    let fresh_procedural_seed = procedural_random_seed();
+    app.set_procedural_random_seed(fresh_procedural_seed);
+    let mut last_attempted_procedural_id = None;
+    if config.automation.is_none() {
+        match procedural_preferences::load(&procedural_preferences_path) {
+            Ok(Some(generation_id)) => {
+                app.set_procedural_generation_id(generation_id);
+                last_attempted_procedural_id = Some(generation_id);
+            }
+            Ok(None) => app.set_procedural_generation_id(GenerationId::new(
+                fresh_procedural_seed,
+                ProceduralDifficulty::Classic,
+            )),
+            Err(error) => {
+                eprintln!("warning: {error}; starting with a fresh procedural road");
+                app.set_procedural_generation_id(GenerationId::new(
+                    fresh_procedural_seed,
+                    ProceduralDifficulty::Classic,
+                ));
+            }
+        }
     }
     let cfg_path = config.source_root.join("SKYROADS.CFG");
     let mut last_saved_cfg = load_cfg_or_default(&cfg_path).map_err(|error| error.to_string())?;
@@ -878,8 +952,15 @@ fn run() -> Result<()> {
     window.set_title(&window_title(current_mode, debug_view))?;
     print_display_diagnostics(&sdl, display_info.as_ref(), &app, &presenter);
 
-    if config.automation == Some(AutomationMode::GameplaySmoke) {
-        println!("SkyRoads automated gameplay smoke test");
+    if matches!(
+        config.automation,
+        Some(AutomationMode::Gameplay | AutomationMode::Procedural)
+    ) {
+        let procedural = config.automation == Some(AutomationMode::Procedural);
+        println!(
+            "SkyRoads automated {} smoke test",
+            if procedural { "procedural" } else { "gameplay" }
+        );
         println!("assets: {}", config.source_root.display());
         return run_gameplay_smoke(GameplaySmokeRuntime {
             sdl: &sdl,
@@ -893,10 +974,11 @@ fn run() -> Result<()> {
             audio_device: &audio_device,
             current_mode,
             current_scene,
+            procedural,
         });
     }
 
-    if config.automation == Some(AutomationMode::GamepadSmoke) {
+    if config.automation == Some(AutomationMode::Gamepad) {
         println!("SkyRoads injected logical-gamepad smoke test");
         println!("assets: {}", config.source_root.display());
         return run_gamepad_smoke(GamepadSmokeRuntime {
@@ -925,9 +1007,15 @@ fn run() -> Result<()> {
     let mut last_input_tuning = initial_input_tuning;
     let mut last_controller_sample_error = None;
     let mut warned_missing_controller = false;
+    let mut text_input_active = false;
 
     'running: loop {
         let frame_started = Instant::now();
+        let should_accept_text = app.is_editing_procedural_id();
+        if should_accept_text != text_input_active {
+            sdl.set_text_input_active(should_accept_text);
+            text_input_active = should_accept_text;
+        }
         let pending_events = sdl.poll_events();
         if pending_events.quit_requested {
             break;
@@ -986,6 +1074,14 @@ fn run() -> Result<()> {
         );
         let toggle_fullscreen = menu_input_latch.take_toggle_fullscreen_request();
         apply_menu_edges(&mut input.app, menu_edges);
+        input.app.text_input = TextInput::new(&pending_events.text_input);
+        if !input.app.text_input.is_empty() {
+            // WASD and Q are ordinary characters while editing a share code.
+            input.app.up = false;
+            input.app.down = false;
+            input.app.left = false;
+            input.app.right = false;
+        }
         if current_mode == AppMode::SettingsMenu && !controller_input_discontinuity {
             apply_controller_settings_edges(&mut input.app, gamepad_input);
         }
@@ -998,7 +1094,7 @@ fn run() -> Result<()> {
             input_tuning,
         ));
         let control_mode = app.control_mode();
-        if input.quit {
+        if input.quit && !app.is_editing_procedural_id() {
             break;
         }
         if toggle_fullscreen {
@@ -1051,6 +1147,13 @@ fn run() -> Result<()> {
             let tick = app.tick(app_input);
             apply_audio_commands(&mut audio_mixer, &audio_device, &tick.audio_commands)?;
             sync_cfg_if_changed(&cfg_path, &mut last_saved_cfg, &app)?;
+            if config.automation.is_none() {
+                sync_procedural_preferences_if_changed(
+                    &procedural_preferences_path,
+                    &mut last_attempted_procedural_id,
+                    &app,
+                );
+            }
             if tick.quit_requested {
                 break 'running;
             }
@@ -1298,6 +1401,7 @@ struct GameplaySmokeRuntime<'a, 'sdl, 'window> {
     audio_device: &'a AudioDevice<'sdl>,
     current_mode: AppMode,
     current_scene: RenderScene,
+    procedural: bool,
 }
 
 fn run_gameplay_smoke(runtime: GameplaySmokeRuntime<'_, '_, '_>) -> Result<()> {
@@ -1313,9 +1417,14 @@ fn run_gameplay_smoke(runtime: GameplaySmokeRuntime<'_, '_, '_>) -> Result<()> {
         audio_device,
         mut current_mode,
         mut current_scene,
+        procedural,
     } = runtime;
     let mut texture = Texture::new_rgba_streaming(presenter, 320, 200)?;
-    let mut smoke = GameplaySmokeAutomation::default();
+    let mut smoke = if procedural {
+        GameplaySmokeAutomation::procedural()
+    } else {
+        GameplaySmokeAutomation::default()
+    };
     let mut display_rect = renderer_display_rect(presenter)?;
     present_scene(
         presenter,
@@ -1508,6 +1617,31 @@ fn sync_cfg_if_changed(
     Ok(())
 }
 
+fn sync_procedural_preferences_if_changed(
+    path: &Path,
+    last_attempted: &mut Option<GenerationId>,
+    app: &AttractModeApp,
+) {
+    let generation_id = app.procedural_generation_id();
+    if !mark_procedural_preference_attempt(last_attempted, generation_id) {
+        return;
+    }
+    if let Err(error) = procedural_preferences::save(path, generation_id) {
+        eprintln!("warning: {error}; continuing without persisted procedural preferences");
+    }
+}
+
+fn mark_procedural_preference_attempt(
+    last_attempted: &mut Option<GenerationId>,
+    generation_id: GenerationId,
+) -> bool {
+    if *last_attempted == Some(generation_id) {
+        return false;
+    }
+    *last_attempted = Some(generation_id);
+    true
+}
+
 fn fill_audio_queue(audio_device: &AudioDevice, mixer: &mut AudioMixer) -> Result<()> {
     let queued = audio_device.queued_samples();
     if queued >= AUDIO_QUEUE_LOW_WATER_SAMPLES {
@@ -1535,10 +1669,13 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<LaunchConfi
         match arg.as_str() {
             "-h" | "--help" => return Err(usage().to_string()),
             "--smoke-gameplay" => {
-                set_automation_mode(&mut automation, AutomationMode::GameplaySmoke)?;
+                set_automation_mode(&mut automation, AutomationMode::Gameplay)?;
+            }
+            "--smoke-procedural" => {
+                set_automation_mode(&mut automation, AutomationMode::Procedural)?;
             }
             "--smoke-gamepad" => {
-                set_automation_mode(&mut automation, AutomationMode::GamepadSmoke)?;
+                set_automation_mode(&mut automation, AutomationMode::Gamepad)?;
             }
             "--controller-diagnostics" => {
                 if controller_diagnostics {
@@ -1601,7 +1738,7 @@ fn set_automation_mode(
 }
 
 fn usage() -> &'static str {
-    "usage: cargo run -p skyroads-sdl -- [--smoke-gameplay|--smoke-gamepad] [--windowed|--fullscreen|--borderless|--exclusive-fullscreen] [source_root]\n       cargo run -p skyroads-sdl -- --controller-diagnostics"
+    "usage: cargo run -p skyroads-sdl -- [--smoke-gameplay|--smoke-procedural|--smoke-gamepad] [--windowed|--fullscreen|--borderless|--exclusive-fullscreen] [source_root]\n       cargo run -p skyroads-sdl -- --controller-diagnostics"
 }
 
 fn print_controls(source_root: &Path) {
@@ -1616,6 +1753,10 @@ fn print_controls(source_root: &Path) {
     println!("  Tab        cycle debug views");
     println!("  Escape     back to previous menu, exit gameplay to level select");
     println!("  Q          quit");
+    println!("procedural setup:");
+    println!("  Play / New Random / Difficulty / Enter ID");
+    println!("  type or paste an ID, then press Enter; Backspace edits, Escape cancels");
+    println!("  controller users can enter IDs with the on-screen character grid");
     println!("settings menu modes:");
     println!("  keyboard   arrow keys + enter/space");
     println!("  joystick   active mapped controller, with raw index-0 fallback");
@@ -1648,6 +1789,7 @@ fn window_title(mode: AppMode, debug_view: DebugViewMode) -> String {
         AppMode::HelpMenu => "Help",
         AppMode::SettingsMenu => "Settings",
         AppMode::InputSettings => "Input Settings",
+        AppMode::ProceduralSetup => "Procedural Road",
         AppMode::DemoPlayback => "Demo",
         AppMode::Boot => "Boot",
         AppMode::GoMenu => "Level Select",
@@ -2011,14 +2153,35 @@ mod tests {
 
     use super::{
         apply_menu_edges, fit_rect_with_aspect, held_only_input, initial_input_tuning,
-        normalized_gameplay_controls, parse_args_from, resolve_controller_sample, scancode, sdl,
-        AppInput, AppMode, AutomationMode, ControllerSample, DisplayMode, GamepadLatch,
-        GamepadSnapshot, InputTuning, KeyLatch, MenuHeld, MenuInputLatch, Rect,
+        mark_procedural_preference_attempt, normalized_gameplay_controls, parse_args_from,
+        resolve_controller_sample, scancode, sdl, AppInput, AppMode, AutomationMode,
+        ControllerSample, DisplayMode, GamepadLatch, GamepadSnapshot, InputTuning, KeyLatch,
+        MenuHeld, MenuInputLatch, Rect,
     };
-    use skyroads_core::{ControllerState, SensitivityPercent};
+    use skyroads_core::{ControllerState, GenerationId, ProceduralDifficulty, SensitivityPercent};
 
     fn keyboard(keys: &[usize]) -> sdl::KeyboardState {
         sdl::KeyboardState::from_keys(keys)
+    }
+
+    #[test]
+    fn failed_procedural_preference_save_waits_for_an_id_change_before_retrying() {
+        let first = GenerationId::new(1, ProceduralDifficulty::Classic);
+        let second = GenerationId::new(2, ProceduralDifficulty::Classic);
+        let mut last_attempted = None;
+
+        assert!(mark_procedural_preference_attempt(
+            &mut last_attempted,
+            first
+        ));
+        assert!(!mark_procedural_preference_attempt(
+            &mut last_attempted,
+            first
+        ));
+        assert!(mark_procedural_preference_attempt(
+            &mut last_attempted,
+            second
+        ));
     }
 
     #[test]
@@ -2755,11 +2918,18 @@ mod tests {
     #[test]
     fn headless_smoke_defaults_to_windowed_but_respects_explicit_mode() {
         let smoke = parse_args_from(["--smoke-gameplay".to_string()]).unwrap();
-        assert_eq!(smoke.automation, Some(AutomationMode::GameplaySmoke));
+        assert_eq!(smoke.automation, Some(AutomationMode::Gameplay));
         assert_eq!(smoke.display_mode_override, Some(DisplayMode::Windowed));
 
+        let procedural = parse_args_from(["--smoke-procedural".to_string()]).unwrap();
+        assert_eq!(procedural.automation, Some(AutomationMode::Procedural));
+        assert_eq!(
+            procedural.display_mode_override,
+            Some(DisplayMode::Windowed)
+        );
+
         let gamepad = parse_args_from(["--smoke-gamepad".to_string()]).unwrap();
-        assert_eq!(gamepad.automation, Some(AutomationMode::GamepadSmoke));
+        assert_eq!(gamepad.automation, Some(AutomationMode::Gamepad));
         assert_eq!(gamepad.display_mode_override, Some(DisplayMode::Windowed));
 
         let exclusive = parse_args_from([

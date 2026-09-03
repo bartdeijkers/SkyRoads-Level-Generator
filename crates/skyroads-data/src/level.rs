@@ -62,11 +62,30 @@ impl LevelCell {
     pub fn is_empty(&self) -> bool {
         !self.has_tunnel && !self.has_tile && self.cube_height.is_none()
     }
+
+    pub fn from_raw_descriptor(raw_descriptor: u16) -> Self {
+        cell_from_descriptor(raw_descriptor)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LevelKind {
+    Demo,
+    Campaign,
+    Procedural,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LevelTheme {
+    pub world_index: usize,
+    pub palette_index: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Level {
     pub road_index: usize,
+    pub kind: LevelKind,
+    pub theme: LevelTheme,
     pub name: String,
     pub gravity: u16,
     pub fuel: u16,
@@ -170,6 +189,19 @@ pub fn level_from_road_entry(road: &RoadEntry) -> Level {
 
     Level {
         road_index: road.index,
+        kind: if road.index == 0 {
+            LevelKind::Demo
+        } else {
+            LevelKind::Campaign
+        },
+        theme: LevelTheme {
+            world_index: if road.index == 0 {
+                0
+            } else {
+                (road.index - 1) / 3
+            },
+            palette_index: road.index,
+        },
         name: if road.index == 0 {
             "Demo Level".to_string()
         } else {
