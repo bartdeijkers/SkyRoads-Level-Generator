@@ -115,9 +115,11 @@ const GO_MENU_SELECTION_COLOR: RgbColor = RgbColor::new(255, 185, 64);
 const GO_MENU_SELECTION_OUTLINE: RgbColor = RgbColor::new(255, 255, 255);
 
 const MAIN_MENU_CENTER_X: i32 = 161;
-const MAIN_MENU_ART_Y_OFFSET: i32 = -8;
+const MAIN_MENU_ART_Y_OFFSET: i32 = -34;
+const MAIN_MENU_ORIGINAL_ROW_HEIGHT: usize = 19;
+const MAIN_MENU_INSERTED_ROW_HEIGHT: i32 = 19;
+const MAIN_MENU_PROCEDURAL_Y: i32 = 118;
 const MAIN_MENU_QUIT_Y: i32 = 179;
-const MAIN_MENU_PROCEDURAL_Y: i32 = 158;
 const MAIN_MENU_TEXT: RgbColor = RgbColor::new(252, 252, 252);
 const MAIN_MENU_SELECTED_OUTLINE: RgbColor = RgbColor::new(236, 196, 0);
 
@@ -730,9 +732,36 @@ impl ReferenceRenderer {
     }
 
     fn draw_main_menu_fragment(&self, frame: &mut FrameBuffer320x200, fragment: &ImageFrame) {
-        let x = i32::from(fragment.x_offset);
-        let y = i32::from(fragment.y_offset) + MAIN_MENU_ART_Y_OFFSET;
-        self.draw_fragment_at(frame, fragment, x, y);
+        let dest_x = i32::from(fragment.x_offset);
+        let dest_y = i32::from(fragment.y_offset) + MAIN_MENU_ART_Y_OFFSET;
+        let width = usize::from(fragment.width);
+        let height = usize::from(fragment.height);
+
+        // MAINMENU.LZS packs START, CONTROLS, and HELP into three 19-pixel
+        // rows. Leave a row-sized gap after START for the procedural entry.
+        for source_y in 0..height {
+            let inserted_row_offset = if source_y >= MAIN_MENU_ORIGINAL_ROW_HEIGHT {
+                MAIN_MENU_INSERTED_ROW_HEIGHT
+            } else {
+                0
+            };
+            for source_x in 0..width {
+                let pixel_index = fragment.pixels[source_y * width + source_x];
+                if fragment.transparent_zero && pixel_index == 0 {
+                    continue;
+                }
+                let Some(color) = fragment.palette.colors.get(pixel_index as usize).copied() else {
+                    continue;
+                };
+                let x = dest_x + source_x as i32;
+                let y = dest_y + source_y as i32 + inserted_row_offset;
+                if frame.palette.color(pixel_index) == color {
+                    frame.set_pixel_index(x as usize, y as usize, pixel_index);
+                } else {
+                    frame.set_pixel(x as usize, y as usize, color);
+                }
+            }
+        }
     }
 
     fn draw_main_menu_quit(&self, frame: &mut FrameBuffer320x200, selected: bool) {
@@ -5319,6 +5348,31 @@ mod tests {
             menu.palette,
             super::archive_vga_palette(&renderer.assets().main_menu)
         );
+    }
+
+    #[test]
+    fn main_menu_rows_have_non_overlapping_vertical_bands() {
+        let assets = AttractModeAssets::load_from_root(repo_root()).unwrap();
+        let fragment = &assets.main_menu.frames[0][0];
+        let original_top = i32::from(fragment.y_offset) + super::MAIN_MENU_ART_Y_OFFSET;
+        let original_row_height = super::MAIN_MENU_ORIGINAL_ROW_HEIGHT as i32;
+        let start_bottom = original_top + original_row_height;
+        let procedural_outline_top = super::MAIN_MENU_PROCEDURAL_Y - 4;
+        let procedural_outline_bottom = procedural_outline_top + 18;
+        let controls_top =
+            original_top + original_row_height + super::MAIN_MENU_INSERTED_ROW_HEIGHT;
+        let help_bottom = controls_top + original_row_height * 2;
+        let quit_outline_top = super::MAIN_MENU_QUIT_Y - 1;
+        let quit_outline_bottom = super::MAIN_MENU_QUIT_Y + 15;
+
+        assert_eq!(
+            usize::from(fragment.height),
+            3 * super::MAIN_MENU_ORIGINAL_ROW_HEIGHT
+        );
+        assert!(start_bottom <= procedural_outline_top);
+        assert!(procedural_outline_bottom <= controls_top);
+        assert!(help_bottom <= quit_outline_top);
+        assert!(quit_outline_bottom <= super::FRAMEBUFFER_HEIGHT as i32);
     }
 
     #[test]
