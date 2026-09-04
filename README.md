@@ -47,6 +47,10 @@ directory instead of `.` when needed.
 Packaged-build setup is documented separately for
 [Windows](packaging/README-WINDOWS.txt) and
 [Linux/WSL](packaging/README-LINUX.txt).
+Release archives exclude the original game data; follow
+[the data setup instructions](packaging/GAME-DATA.txt) before launching.
+The [release guide](packaging/README.md) explains how to publish Windows x64,
+Linux AMD64, and Linux ARM64 packages through GitHub Actions.
 
 ## Controls
 
@@ -148,6 +152,7 @@ injects logical input; it does not prove that SDL can detect physical hardware.
 ## Legal Note
 
 This repository supports compatibility, preservation, research, and native-port
-work. The original assets remain subject to their own rights and terms. Verify
-redistribution and commercial-use rights independently; these technical notes
-are not legal advice.
+work. The original freeware terms require intact distribution and restrict
+reverse engineering. Release packages therefore omit the original game and
+data. See [the redistribution research and packaging policy](packaging/README.md#original-game-redistribution).
+This exclusion does not establish legal clearance for the port itself.

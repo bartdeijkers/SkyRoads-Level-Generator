@@ -1,0 +1,42 @@
+Original SkyRoads data is not included
+====================================
+
+This is an unofficial native port. The original game and its graphics, levels,
+music, and sounds belong to Bluemoon Interactive. Even procedural mode needs
+the original data files.
+
+Obtain the full original SkyRoads game separately from the developer:
+    http://www.bluemoon.ee/history/skyroads/index.html
+    http://www.bluemoon.ee/history/skyroads/skyroads.zip
+
+Extract your copy into a writable directory and pass that directory to the port:
+    Windows: skyroads-sdl.exe "C:\Games\SkyRoads-data"
+    Linux:   ./skyroads-sdl "$HOME/Games/SkyRoads-data"
+
+Alternatively, copy the data files beside the native executable and launch from
+that directory. Preserve uppercase filenames on Linux. Use the full original
+game, not the demo or Christmas edition. The required files are:
+
+    ANIM.LZS        CARS.LZS        DASHBRD.LZS     DEMO.REC
+    FUL_DISP.DAT    GOMENU.LZS      HELPMENU.LZS    INTRO.LZS
+    INTRO.SND       MAINMENU.LZS    MUZAX.LZS       OXY_DISP.DAT
+    ROADS.LZS       SETMENU.LZS     SFX.SND         SPEED.DAT
+    TREKDAT.LZS     WORLD0.LZS      WORLD1.LZS      WORLD2.LZS
+    WORLD3.LZS      WORLD4.LZS      WORLD5.LZS      WORLD6.LZS
+    WORLD7.LZS      WORLD8.LZS      WORLD9.LZS
+
+The native port does not run or need SKYROADS.EXE. Keep the original download
+and its readme intact when storing or sharing the original game.
+
+Why the files are separate
+-------------------------
+Research checked on 2026-09-04: the readme.txt inside the developer's full
+download permits redistribution only as a complete, unmodified unit and also
+contains a reverse-engineering restriction. It does not clearly authorize
+repackaging selected assets with this reverse-engineered port. These release
+packages therefore omit the original DOS executable and all original data.
+This is a conservative packaging decision, not a legal clearance of the port
+or its recovered runtime tables.
+
+A matching copy of the original distribution terms is available at:
+    https://www.classicdosgames.com/files/licenses/Bluemoon_Interactive_Freeware_License.txt

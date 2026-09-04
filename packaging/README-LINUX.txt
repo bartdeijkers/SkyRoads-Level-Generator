@@ -1,15 +1,20 @@
-SkyRoads Rust 0.1.0 - Linux x64 (Ubuntu 24.04 / WSL2)
-=====================================================
+SkyRoads Rust - Linux AMD64 / ARM64 (Ubuntu 24.04)
+===============================================
 
-This build targets 64-bit Ubuntu 24.04 and requires SDL 2.0.18 or newer.
+Choose linux-x64 for AMD/Intel x86-64, or linux-arm64 for 64-bit ARM/AArch64.
+BUILD-INFO.json records this package's version, target, and source commit.
+Original game data is not included. Follow GAME-DATA.txt to supply your copy.
+
+This build targets Ubuntu 24.04 and requires SDL 2.0.18 or newer.
 Install the SDL2 runtime once:
 
     sudo apt install libsdl2-2.0-0
 
 Run the game from the unpacked archive directory:
 
-    ./skyroads-sdl .
+    ./skyroads-sdl "$HOME/Games/SkyRoads-data"
 
+Native Linux needs a working desktop display and audio session. Under WSL2,
 WSLg must be available for the visible game window and audio. WSLg
 display/audio integration is separate from controller forwarding; a controller
 paired with Windows is not automatically visible inside Linux.
@@ -126,13 +131,14 @@ device. The gamepad command injects logical input and does not prove that Linux
 can see physical hardware:
 
     SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
-        ./skyroads-sdl --smoke-gameplay .
+        ./skyroads-sdl --smoke-gameplay "$HOME/Games/SkyRoads-data"
     SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy \
-        ./skyroads-sdl --smoke-gamepad .
+        ./skyroads-sdl --smoke-gamepad "$HOME/Games/SkyRoads-data"
 
 Compatibility and validation boundary
 -------------------------------------
-This is a dynamically linked Ubuntu 24.04 x86-64 build. It requires glibc and
+This is a dynamically linked Ubuntu 24.04 build for the named architecture.
+It requires glibc and
 libSDL2-2.0.so.0 from the host distribution; compatibility with older Linux
 distributions is not claimed.
 

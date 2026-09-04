@@ -1,0 +1,9 @@
+# GitHub's generated source archives must also omit the original game.
+*.LZS export-ignore
+*.DAT export-ignore
+*.SND export-ignore
+*.REC export-ignore
+SKYROADS.EXE export-ignore
+readme.txt export-ignore
+fixtures/ export-ignore
+dist/ export-ignore

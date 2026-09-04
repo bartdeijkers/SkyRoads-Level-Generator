@@ -1,0 +1,163 @@
+name: Release packages
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: '1.97.1'
+
+jobs:
+  package:
+    name: Package ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            runner: windows-2022
+            target: x86_64-pc-windows-msvc
+            executable: skyroads-sdl.exe
+          - platform: linux-x64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            executable: skyroads-sdl
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            executable: skyroads-sdl
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Linux SDL2
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libsdl2-dev pkg-config
+
+      - name: Install verified Windows SDL2
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'SDL2-devel.zip'
+          Invoke-WebRequest 'https://github.com/libsdl-org/SDL/releases/download/release-2.32.10/SDL2-devel-2.32.10-VC.zip' -OutFile $archive
+          $expected = 'af347939395a58b365846aaea27391e69f9ec9d4dd650d6ac40802159b418a6e'
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
+            throw 'SDL2 archive checksum mismatch'
+          }
+          $destination = Join-Path $env:RUNNER_TEMP 'sdl'
+          Expand-Archive $archive -DestinationPath $destination
+          $sdl = (Join-Path $destination 'SDL2-2.32.10').Replace('\', '/')
+          "SDL_DIRECTORY=$sdl" >> $env:GITHUB_ENV
+          "SDL2_LIBS=-L$sdl/lib/x64 -lSDL2" >> $env:GITHUB_ENV
+          'RUSTFLAGS=-C target-feature=+crt-static' >> $env:GITHUB_ENV
+          "$sdl/lib/x64" >> $env:GITHUB_PATH
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal --target '${{ matrix.target }}'
+          rustup override set "$RUST_VERSION"
+          cargo fetch --locked
+
+      - name: Verify release tag and packaging regressions
+        run: |
+          python -c 'import sys; sys.path.insert(0, "packaging"); import release; print(release.package_version(release.cargo_metadata()))'
+          python -m unittest discover -s packaging -p 'test_*.py'
+
+      - name: Test workspace
+        run: cargo test --locked --workspace --target '${{ matrix.target }}'
+
+      - name: Build native release
+        run: cargo build --locked --release -p skyroads-sdl --target '${{ matrix.target }}'
+
+      - name: Package and smoke-test unpacked binary
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          TARGET: ${{ matrix.target }}
+          EXECUTABLE: ${{ matrix.executable }}
+        run: |
+          extra=()
+          if [[ "$PLATFORM" == windows-x64 ]]; then
+            extra=(--sdl-directory "$SDL_DIRECTORY")
+          fi
+          python packaging/release.py --platform "$PLATFORM" \
+            --binary "target/$TARGET/release/$EXECUTABLE" "${extra[@]}"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: package-${{ matrix.platform }}
+          path: target/packages/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  publish:
+    name: Publish complete release
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: package-*
+          path: target/packages
+          merge-multiple: true
+
+      - name: Verify all three packages and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          test "$(git rev-parse "$TAG^{commit}")" = "$GITHUB_SHA"
+          cd target/packages
+          version="${TAG#v}"
+          archives=(
+            "SkyRoads-Rust-$version-windows-x64.zip"
+            "SkyRoads-Rust-$version-linux-x64.tar.gz"
+            "SkyRoads-Rust-$version-linux-arm64.tar.gz"
+          )
+          for archive in "${archives[@]}"; do
+            test -f "$archive"
+            sha256sum --check "$archive.sha256"
+          done
+          sha256sum "${archives[@]}" > SHA256SUMS.txt
+          {
+            echo "Native port built from $GITHUB_SHA."
+            echo
+            echo 'Original game data is excluded. Follow GAME-DATA.txt in the package to supply your own copy.'
+            echo 'Windows x64 includes SDL2. Linux AMD64 and ARM64 require Ubuntu 24.04 or compatible and the SDL2 runtime.'
+            echo 'Automated tests and packaged headless smoke tests passed on each architecture; these do not certify physical controllers.'
+          } > release-notes.md
+          prerelease=()
+          if [[ "$version" == *-* ]]; then prerelease=(--prerelease); fi
+          # Stage assets before making the release visible. Existing tags/releases
+          # are never silently overwritten; a failed draft can be inspected/deleted.
+          gh release create "$TAG" --verify-tag --draft --title "SkyRoads Rust $version" \
+            --notes-file release-notes.md "${prerelease[@]}" "${archives[@]}" SHA256SUMS.txt
+          gh release edit "$TAG" --draft=false

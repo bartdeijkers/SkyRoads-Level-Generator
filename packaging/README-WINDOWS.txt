@@ -1,8 +1,14 @@
-SkyRoads Rust 0.1.0 - Windows x64
-================================
+SkyRoads Rust - Windows x64
+==========================
 
-Start the game by double-clicking skyroads-sdl.exe. Keep SDL2.dll and the data
-files in the same directory as the executable.
+Original game data is not included. Follow GAME-DATA.txt to obtain and install
+your own copy before launching. Keep SDL2.dll beside skyroads-sdl.exe.
+From the unpacked directory, run:
+
+    skyroads-sdl.exe "C:\Games\SkyRoads-data"
+
+If you put the data beside the executable, you can double-click skyroads-sdl.exe.
+BUILD-INFO.json records this package's version, target, and source commit.
 
 Keyboard controls
 -----------------
