@@ -68,14 +68,24 @@ so game data and generated settings cannot enter the archive. The build emits
 dependency license texts in `THIRD-PARTY-NOTICES.txt` and, on Windows, the SDL
 license. It does not assign a new license to the project or original game.
 
-`.gitattributes` also excludes original game files and captured DOS fixtures
-from `git archive`/GitHub-generated source archives. It does not remove existing
-files from Git history or checkouts. Source archives can build the native port;
-tests relying on omitted game data or fixtures need a development checkout.
+The current source tree no longer tracks the original root game files;
+`.gitignore` prevents accidentally adding local test copies. Their removal does
+not rewrite earlier Git history. `.gitattributes` also excludes original game
+files and captured DOS fixtures from `git archive`/GitHub-generated source
+archives. Source archives can build the native port without the game data.
+
+CI builds the native executable first, then downloads the developer's complete
+original archive and verifies its pinned SHA-256 before extracting it into the
+temporary runner checkout. The existing fixture tests require these root data
+files, including `SKYROADS.EXE`. If the download or checksum check fails, the
+workflow fails instead of skipping tests. This data is never included in the
+uploaded packages.
 
 ## Local package verification
 
-From a Linux checkout with SDL2 development files and Rust installed:
+From a Linux checkout with SDL2 development files and Rust installed, first
+extract your full original game into the checkout root for the fixture tests.
+Git ignores these local copies. Then run:
 
 ```bash
 cargo fetch --locked

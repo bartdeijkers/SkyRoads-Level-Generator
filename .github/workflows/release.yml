@@ -81,11 +81,19 @@ jobs:
           python -c 'import sys; sys.path.insert(0, "packaging"); import release; print(release.package_version(release.cargo_metadata()))'
           python -m unittest discover -s packaging -p 'test_*.py'
 
-      - name: Test workspace
-        run: cargo test --locked --workspace --target '${{ matrix.target }}'
-
       - name: Build native release
         run: cargo build --locked --release -p skyroads-sdl --target '${{ matrix.target }}'
+
+      - name: Fetch original game for fixture tests
+        run: |
+          cd "$RUNNER_TEMP"
+          curl --fail --location --retry 3 --max-time 60 \
+            http://www.bluemoon.ee/history/skyroads/skyroads.zip --output skyroads-original.zip
+          echo '24762fe14196a642224288fe2063c9d0c0033be9c5b4b2f97fded09390803ee4  skyroads-original.zip' | sha256sum --check
+          python -m zipfile --extract skyroads-original.zip "$GITHUB_WORKSPACE"
+
+      - name: Test workspace
+        run: cargo test --locked --workspace --target '${{ matrix.target }}'
 
       - name: Package and smoke-test unpacked binary
         env:

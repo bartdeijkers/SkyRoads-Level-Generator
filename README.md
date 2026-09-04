@@ -142,11 +142,17 @@ For a native Windows build, use the MSVC Rust toolchain and SDL2 VC development
 libraries; the [release workflow][workflow] shows the linker setup. To assemble
 or publish packages, follow the [release guide][releasing].
 
-GitHub-generated source archives exclude original game files and captured DOS
-fixtures. They can build the native port, but tests that use those fixtures
-require a full Git checkout. Supply game data separately when it is absent.
+Original game files are not tracked in the current source tree and are not
+needed to compile the native port. Supply game data separately to run it.
+GitHub-generated source archives also exclude captured DOS fixtures, so tests
+that use those fixtures require a full Git checkout.
 
 ## Development Commands
+
+For the fixture-based Rust tests, extract your full original game into the
+checkout root first, including `SKYROADS.EXE`. These local files are ignored by
+Git. The release workflow downloads a checksum-verified copy from the original
+developer for these tests; it builds the native executable before fetching data.
 
 ```bash
 cargo test --locked
@@ -160,9 +166,11 @@ cargo run --locked -p skyroads-sdl -- --smoke-gamepad .
 cargo run --locked -p skyroads-sdl -- --controller-diagnostics
 ```
 
-Run these commands from a full development checkout. The `.` arguments refer to
-the original game data in the repository root; replace them with a different
-data path as needed. The Rust tests locate their fixtures in the checkout.
+Run these commands from that prepared development checkout. The `.` arguments
+refer to your local game data; replace them with a different data path for CLI
+and smoke commands as needed. The Rust tests locate their fixtures and original
+game data in the checkout root. A clean checkout can compile, but those tests
+need the separate data setup above.
 
 `cargo test --locked` covers the portable default workspace members;
 `--workspace` also tests the SDL host and requires SDL development files.

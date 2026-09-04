@@ -8,3 +8,9 @@ MEMDUMP.BIN
 /SKYROADS.CFG
 /SKYROADS-RS-DISPLAY.CFG
 /SKYROADS-RS-INPUT.CFG
+# Original game files may be supplied locally for fixture-based tests.
+/*.LZS
+/*.DAT
+/*.SND
+/*.REC
+/SKYROADS.EXE
