@@ -1,62 +1,66 @@
-# SkyRoads Reverse Engineering + Native Port
+# SkyRoads Level Generator
 
-A deterministic Rust port of the original DOS game **SkyRoads**, built from
-reverse-engineered data formats and runtime behavior rather than source code.
-The project runs natively through SDL2 and validates behavior against the
-shipped DOS build.
+A native Rust/SDL2 port of **SkyRoads**, the DOS game by Bluemoon Interactive,
+with deterministic procedural roads and shareable generation IDs. Play the
+original campaign or create a new road on Easy, Classic, or Hard.
 
-## Status
+The port reconstructs the game's data formats and runtime behavior through
+reverse engineering. Original graphics, sound effects, and OPL2 music run
+natively; DOSBox and `SKYROADS.EXE` are not needed to play.
 
-The native port is playable but not yet fully 1:1.
+## Download and Play
 
-- Intro, menus, demo playback, gameplay, graphics, sound effects, and OPL2
-  music run natively.
-- Procedural mode builds finite, themed roads from deterministic visual motifs
-  and supports shareable generation IDs.
-- The runtime loads the original game assets but does not require
-  `SKYROADS.EXE` at startup.
-- Keyboard, mouse, and one-player controller input are implemented, including
-  hot-plug handling and sensitivity settings.
-- Renderer coverage includes all road dispatch kinds, ship shadow variants,
-  death states, and the final tunnel exit.
-- Some collision edge cases and broad frame/audio oracle coverage remain in
-  progress.
+Download a package from **[release v1.0.0](https://github.com/bartdeijkers/SkyRoads-Level-Generator/releases/tag/v1.0.0)**:
 
-See [the reverse-engineering baseline](docs/reverse-engineering.md) for verified
-findings and [the port architecture](docs/port-architecture.md) for design
-boundaries.
+| Platform | Download | Runtime setup |
+| --- | --- | --- |
+| Windows x64 (Intel/AMD) | [ZIP](https://github.com/bartdeijkers/SkyRoads-Level-Generator/releases/download/v1.0.0/SkyRoads-Rust-1.0.0-windows-x64.zip) | SDL2 is included; keep `SDL2.dll` beside the executable. |
+| Linux x64 (Intel/AMD) | [tar.gz](https://github.com/bartdeijkers/SkyRoads-Level-Generator/releases/download/v1.0.0/SkyRoads-Rust-1.0.0-linux-x64.tar.gz) | Ubuntu 24.04 or compatible, with the SDL2 runtime. |
+| Linux ARM64 (AArch64) | [tar.gz](https://github.com/bartdeijkers/SkyRoads-Level-Generator/releases/download/v1.0.0/SkyRoads-Rust-1.0.0-linux-arm64.tar.gz) | Ubuntu 24.04 or compatible, with the SDL2 runtime. |
 
-## Run the Game
+Packages include the native executable, setup notes, and dependency notices.
+You do not need Rust to use them. The release also provides
+[SHA-256 checksums](https://github.com/bartdeijkers/SkyRoads-Level-Generator/releases/download/v1.0.0/SHA256SUMS.txt).
 
-Requirements:
+**Original game data is required and is not included, even for procedural mode.**
+Obtain the full original game separately and follow `GAME-DATA.txt` in the
+package, also available in the [data setup guide][game-data]. Use the original
+full edition, not the demo or Christmas edition, and preserve uppercase data
+filenames on Linux.
 
-- a Rust toolchain;
-- SDL2 2.0.18 or newer, including development files;
-- the original SkyRoads data files, which are present in this workspace.
+Extract the native package, then open a terminal in its directory. Pass the
+directory containing your original game data to the executable.
 
-From the repository root:
+**Windows PowerShell:**
 
-```bash
-cargo run -p skyroads-sdl -- .
+```powershell
+.\skyroads-sdl.exe "C:\Games\SkyRoads-data"
 ```
 
-Normal launches use borderless desktop fullscreen. Use `--windowed` or
-`--exclusive-fullscreen` to override that for one run. Pass a different asset
-directory instead of `.` when needed.
+**Linux:**
 
-Packaged-build setup is documented separately for
-[Windows](packaging/README-WINDOWS.txt) and
-[Linux/WSL](packaging/README-LINUX.txt).
-Release archives exclude the original game data; follow
-[the data setup instructions](packaging/GAME-DATA.txt) before launching.
-The [release guide](packaging/README.md) explains how to publish Windows x64,
-Linux AMD64, and Linux ARM64 packages through GitHub Actions.
+```bash
+sudo apt install libsdl2-2.0-0
+./skyroads-sdl "$HOME/Games/SkyRoads-data"
+```
+
+If you place the data beside the executable, you can launch from that directory
+without a data-path argument; on Windows, double-click `skyroads-sdl.exe`.
+The default display mode is borderless fullscreen. Use `--windowed` or
+`--exclusive-fullscreen` to override the saved display mode for one run.
+
+Under WSL2, WSLg provides the window and audio. Controllers connected to Windows
+are not automatically visible to Linux. See the [Windows setup notes][windows]
+or [Linux/WSL setup notes][linux] for controller setup and diagnostics.
 
 ## Controls
 
 | Action | Keyboard | Controller |
 | --- | --- | --- |
 | Navigate | Arrow keys or WASD | D-pad or left stick |
+| Steer | Left/Right or A/D | D-pad left/right or left-stick X |
+| Accelerate | Up or W | Right trigger, D-pad up, or stick up |
+| Brake | Down or S | Left trigger, D-pad down, or stick down |
 | Confirm | Enter | South face button or Start |
 | Back | Escape | East face button or Back/View |
 | Previous/next display value in Controls | — | LB / RB |
@@ -66,12 +70,16 @@ Linux AMD64, and Linux ARM64 packages through GitHub Actions.
 | Cycle debug view | Tab | — |
 
 Controller face buttons are described by position because Xbox,
-Nintendo-style, and 8BitDo labels differ. Gamepad navigation works in every
-control mode; gamepad movement during gameplay requires `JOYSTICK` in Controls.
+Nintendo-style, and 8BitDo labels differ: south is the lower face button and east
+is the right face button. Select `KEYBOARD`, `JOYSTICK`, or `MOUSE` in Controls
+for gameplay. Gamepad menu navigation works in every control mode. In `MOUSE`
+mode, move horizontally to steer, vertically to accelerate/brake, and press any
+mouse button to jump.
 
 To exit using only the controller, return from gameplay to level selection,
 return again to the main menu, select `QUIT`, and confirm. Main-menu Back does
-not exit the application.
+not exit the application. After a crash or win, release the south button and
+press it again to retry or return to level selection; no separate prompt is drawn.
 
 ## Procedural Roads
 
@@ -93,41 +101,89 @@ can be typed directly or entered with the on-screen controller grid. `SR1`,
 incompatible generator changes use a new version prefix instead of changing
 saved roads.
 
-The last valid ID is stored in `SKYROADS-RS-PROCEDURAL.CFG`. It is separate
-from `SKYROADS.CFG`, and procedural wins never change campaign completion.
+The last valid ID is saved between launches, and procedural wins never change
+campaign completion.
 
 ## Input and Display Settings
 
 Controls → `INPUT` adjusts mouse and controller sensitivity from `50%` to
-`200%`; `100%` preserves the DOS-derived defaults. Native input preferences are
-stored in `SKYROADS-RS-INPUT.CFG` without changing the DOS-compatible
-`SKYROADS.CFG`.
+`200%`; `100%` preserves the DOS-derived defaults.
 
 The display menu supports windowed, borderless, and SDL-reported exclusive
 modes. With `DISPLAY` or `VIDEO MODE` selected in Controls, LB and RB cycle the
-value backward and forward. The last successful choice is stored in
-`SKYROADS-RS-DISPLAY.CFG`.
+value backward and forward.
 
-Controller support and its current hardware-validation limits are tracked in
-[the controller plan](plans/expand-controller-support.md).
+Settings are saved in the **game-data directory**, which must be writable:
+
+| File | Contents |
+| --- | --- |
+| `SKYROADS.CFG` | DOS-compatible game settings and campaign progress |
+| `SKYROADS-RS-INPUT.CFG` | Native mouse/controller sensitivity |
+| `SKYROADS-RS-DISPLAY.CFG` | Last successfully applied display settings |
+| `SKYROADS-RS-PROCEDURAL.CFG` | Last valid generation ID |
+
+The native preference files are separate from the DOS-compatible configuration.
+
+## Build from Source
+
+Development takes place on Windows 11 with Ubuntu 24.04 under WSL. The release
+workflow also builds and tests on native Windows and Linux ARM64 runners.
+
+You need a Rust toolchain and SDL2 **development** files (SDL 2.0.18 or newer).
+CI uses Rust 1.97.1. On Ubuntu, install the build dependencies, then run from
+the repository root:
+
+```bash
+sudo apt install build-essential pkg-config libsdl2-dev
+cargo run --locked -p skyroads-sdl -- "$HOME/Games/SkyRoads-data"
+```
+
+For a native Windows build, use the MSVC Rust toolchain and SDL2 VC development
+libraries; the [release workflow][workflow] shows the linker setup. To assemble
+or publish packages, follow the [release guide][releasing].
+
+GitHub-generated source archives exclude original game files and captured DOS
+fixtures. They can build the native port, but tests that use those fixtures
+require a full Git checkout. Supply game data separately when it is absent.
 
 ## Development Commands
 
 ```bash
-cargo test
-cargo test --workspace
-cargo run -p skyroads-cli -- summary .
-cargo run -p skyroads-cli -- demo-sim . 120
-cargo run -p skyroads-cli -- render-capture . /tmp/skyroads-render-capture
-cargo run -p skyroads-sdl -- --smoke-gameplay .
-cargo run -p skyroads-sdl -- --smoke-procedural .
-cargo run -p skyroads-sdl -- --smoke-gamepad .
-cargo run -p skyroads-sdl -- --controller-diagnostics
+cargo test --locked
+cargo test --locked --workspace
+cargo run --locked -p skyroads-cli -- summary .
+cargo run --locked -p skyroads-cli -- demo-sim . 120
+cargo run --locked -p skyroads-cli -- render-capture . /tmp/skyroads-render-capture
+cargo run --locked -p skyroads-sdl -- --smoke-gameplay .
+cargo run --locked -p skyroads-sdl -- --smoke-procedural .
+cargo run --locked -p skyroads-sdl -- --smoke-gamepad .
+cargo run --locked -p skyroads-sdl -- --controller-diagnostics
 ```
 
-`cargo test` covers the portable default workspace members. SDL development
-files are also required for `cargo test --workspace`. The smoke-gamepad command
-injects logical input; it does not prove that SDL can detect physical hardware.
+Run these commands from a full development checkout. The `.` arguments refer to
+the original game data in the repository root; replace them with a different
+data path as needed. The Rust tests locate their fixtures in the checkout.
+
+`cargo test --locked` covers the portable default workspace members;
+`--workspace` also tests the SDL host and requires SDL development files.
+For headless smoke runs, set `SDL_VIDEODRIVER=dummy` and
+`SDL_AUDIODRIVER=dummy`. Controller diagnostics load no game assets.
+
+## Status and Validation
+
+The native port is playable, with intro, menus, demo playback, campaign and
+procedural gameplay, graphics, audio, and keyboard/mouse/controller input.
+Controller hot-plug handling and sensitivity settings are implemented.
+
+The v1.0.0 [release workflow passed on all three package targets][release-run],
+including workspace tests and packaged gameplay, procedural, and injected
+gamepad smoke tests. These checks do not certify physical controllers; see
+[the controller support and validation plan][controllers] for that evidence.
+
+Full DOS fidelity remains a work in progress. Renderer fixtures cover all
+shipped road dispatch kinds, ship shadow variants, death states, and the final
+tunnel exit. Broader collision, frame, and full-song audio comparisons remain
+open. The [reverse-engineering baseline][baseline] records the detailed findings.
 
 ## Repository Layout
 
@@ -143,16 +199,32 @@ injects logical input; it does not prove that SDL can detect physical hardware.
 
 ## Documentation
 
-- [Reverse-engineering baseline](docs/reverse-engineering.md)
-- [Port architecture](docs/port-architecture.md)
-- [Road draw routine](docs/road-draw-routine.md)
-- [Executable component diagram](docs/skyroads-exe-component-diagram.md)
-- [Controller support and validation](plans/expand-controller-support.md)
+- [Original game data setup][game-data]
+- [Windows setup][windows] and [Linux/WSL setup][linux]
+- [Building and publishing release packages][releasing]
+- [Reverse-engineering baseline][baseline]
+- [Port architecture][architecture]
+- [Road draw routine][road-drawing]
+- [Executable component diagram][exe-diagram]
+- [Controller support and validation][controllers]
 
 ## Legal Note
 
 This repository supports compatibility, preservation, research, and native-port
 work. The original freeware terms require intact distribution and restrict
 reverse engineering. Release packages therefore omit the original game and
-data. See [the redistribution research and packaging policy](packaging/README.md#original-game-redistribution).
+data. See [the redistribution research and packaging policy][redistribution].
 This exclusion does not establish legal clearance for the port itself.
+
+[game-data]: https://github.com/bartdeijkers/SkyRoads-Level-Generator/blob/main/packaging/GAME-DATA.txt
+[windows]: https://github.com/bartdeijkers/SkyRoads-Level-Generator/blob/main/packaging/README-WINDOWS.txt
+[linux]: https://github.com/bartdeijkers/SkyRoads-Level-Generator/blob/main/packaging/README-LINUX.txt
+[releasing]: https://github.com/bartdeijkers/SkyRoads-Level-Generator/blob/main/packaging/README.md
+[redistribution]: https://github.com/bartdeijkers/SkyRoads-Level-Generator/blob/main/packaging/README.md#original-game-redistribution
+[workflow]: https://github.com/bartdeijkers/SkyRoads-Level-Generator/blob/main/.github/workflows/release.yml
+[release-run]: https://github.com/bartdeijkers/SkyRoads-Level-Generator/actions/runs/33919507325
+[baseline]: https://github.com/bartdeijkers/SkyRoads-Level-Generator/blob/main/docs/reverse-engineering.md
+[architecture]: https://github.com/bartdeijkers/SkyRoads-Level-Generator/blob/main/docs/port-architecture.md
+[road-drawing]: https://github.com/bartdeijkers/SkyRoads-Level-Generator/blob/main/docs/road-draw-routine.md
+[exe-diagram]: https://github.com/bartdeijkers/SkyRoads-Level-Generator/blob/main/docs/skyroads-exe-component-diagram.md
+[controllers]: https://github.com/bartdeijkers/SkyRoads-Level-Generator/blob/main/plans/expand-controller-support.md
